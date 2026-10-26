@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>Live Interpretation</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --surface: #181b22;
+    --surface-2: #20242d;
+    --line: #2a2f3a;
+    --text: #f2f3f5;
+    --muted: #9aa1ad;
+    --dim: #5d6472;
+    --accent: #e8b04b;      /* warm candle gold */
+    --accent-ink: #1a1307;
+    --live: #4cc38a;
+    --warn: #e0a043;
+    --caption-size: 26px;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Thai",
+                 "Apple SD Gothic Neo", "Malgun Gothic", "PingFang SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+  .screen { display: none; min-height: 100%; }
+  .screen.active { display: flex; flex-direction: column; }
+
+  /* ---------- language picker ---------- */
+  #pick { padding: max(28px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+  .brand { display: flex; align-items: center; gap: 12px; margin: 8px 4px 28px; }
+  .brand svg { flex: none; }
+  .brand-name { font-size: 15px; font-weight: 600; line-height: 1.3; }
+  .brand-sub { font-size: 13px; color: var(--muted); }
+  .lead { display: flex; align-items: center; gap: 10px; margin: 0 4px 16px; color: var(--muted); font-size: 15px; }
+  .langs { display: grid; gap: 10px; }
+  .lang {
+    display: flex; align-items: center; justify-content: space-between;
+    width: 100%; min-height: 68px; padding: 14px 18px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 16px; text-align: left;
+  }
+  .lang:active { background: var(--surface-2); }
+  .lang-native { font-size: 22px; font-weight: 600; }
+  .lang-en { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .chev { color: var(--dim); }
+  .foot { margin: auto 4px 0; padding-top: 24px; font-size: 12px; color: var(--dim); text-align: center; }
+
+  /* ---------- listening screen ---------- */
+  #listen { height: 100%; }
+  .bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: max(12px, env(safe-area-inset-top)) 12px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px;
+    background: var(--surface); border-radius: 999px; font-size: 14px;
+  }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .status.live .dot { background: var(--live); box-shadow: 0 0 0 4px rgba(76,195,138,.18); }
+  .status.waiting .dot { background: var(--warn); }
+  .size-btns { display: flex; gap: 6px; }
+  .size-btns button { width: 40px; height: 36px; border-radius: 10px; background: var(--surface); font-weight: 700; }
+
+  .feed {
+    flex: 1; overflow-y: auto; padding: 20px 18px 24px;
+    display: flex; flex-direction: column; justify-content: flex-end; gap: 14px;
+  }
+  .line { font-size: calc(var(--caption-size) * .78); line-height: 1.45; color: var(--dim); transition: color .4s; }
+  .line.current { font-size: var(--caption-size); color: var(--text); font-weight: 500; }
+  .line.prev { color: var(--muted); }
+  .empty { margin: auto 0; text-align: center; color: var(--muted); font-size: 17px; line-height: 1.6; }
+
+  .panel {
+    padding: 16px 16px max(16px, env(safe-area-inset-bottom));
+    background: var(--surface); border-top: 1px solid var(--line);
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+  }
+  .play {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    width: 100%; max-width: 420px; height: 64px; border-radius: 18px;
+    background: var(--accent); color: var(--accent-ink); font-size: 20px; font-weight: 700;
+  }
+  .play.on { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
+  .eq { display: none; gap: 3px; align-items: flex-end; height: 18px; }
+  .play.on .eq { display: inline-flex; }
+  .eq i { width: 4px; background: var(--live); border-radius: 2px; animation: eq 1s infinite ease-in-out; }
+  .eq i:nth-child(2) { animation-delay: .2s } .eq i:nth-child(3) { animation-delay: .4s } .eq i:nth-child(4) { animation-delay: .1s }
+  @keyframes eq { 0%,100% { height: 5px } 50% { height: 18px } }
+  .hint { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); text-align: center; }
+  .note { font-size: 11.5px; color: var(--dim); text-align: center; }
+  .demo-tag { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: #3a2a10; color: var(--accent); }
+</style>
+</head>
+<body>
+
+<!-- 1) Language picker: native names only, so nobody has to read Korean or English -->
+<section id="pick" class="screen active">
+  <div class="brand">
+    <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true">
+      <rect width="40" height="40" rx="11" fill="#20242d"/>
+      <path d="M20 9v22M13 16h14" stroke="#e8b04b" stroke-width="3" stroke-linecap="round"/>
+    </svg>
+    <div>
+      <div class="brand-name">호바트한인장로교회</div>
+      <div class="brand-sub">Hobart Korean Presbyterian Church</div>
+    </div>
+  </div>
+  <div class="lead">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"/>
+    </svg>
+    <span>Language · ภาษา · 语言 · Ngôn ngữ · 언어</span>
+  </div>
+  <div class="langs" id="langs"></div>
+  <div class="foot">AI live interpretation</div>
+</section>
+
+<!-- 2) Listening screen -->
+<section id="listen" class="screen">
+  <div class="bar">
+    <button class="chip" id="back" aria-label="change language">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M15 18l-6-6 6-6"/></svg>
+      <span id="langLabel"></span>
+    </button>
+    <div class="chip status waiting" id="status"><span class="dot"></span><span id="statusText"></span></div>
+    <div class="size-btns">
+      <button id="smaller" aria-label="smaller text">A−</button>
+      <button id="bigger" aria-label="bigger text">A+</button>
+    </div>
+  </div>
+
+  <div class="feed" id="feed"><div class="empty" id="empty"></div></div>
+
+  <div class="panel">
+    <button class="play" id="play">
+      <span class="eq"><i></i><i></i><i></i><i></i></span>
+      <svg id="playIcon" width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      <span id="playText"></span>
+    </button>
+    <div class="hint">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 14v-2a9 9 0 0118 0v2"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/></svg>
+      <span id="hintText"></span>
+    </div>
+    <div class="note" id="noteText"></div>
+    <div class="demo-tag" id="demoTag" hidden></div>
+  </div>
+</section>
+
+<script>
+// UI strings and demo captions per language.
+// NOTE: Thai/Chinese/Vietnamese strings were written by AI and should be checked by a native speaker.
+var LANGS = [
+  { code: "en", native: "English", en: "English",
+    ui: { listen: "Start listening", pause: "Pause", live: "Live", waiting: "Waiting to start",
+          ear: "Please use earphones", note: "AI interpretation · may contain errors · screen stays on while listening",
+          empty: "Captions will appear here when the service begins.", demo: "DEMO" },
+    demo: ["Today we are in Genesis chapter 12, verse 1.",
+           "The Lord said to Abram, “Go from your country, your people, and your father’s household to the land I will show you.”",
+           "God is a covenant-making God.",
+           "We are justified only by faith.",
+           "The Heidelberg Catechism, Question 1, asks: What is your only comfort in life and in death?"] },
+  { code: "th", native: "ภาษาไทย", en: "Thai",
+    ui: { listen: "เริ่มฟัง", pause: "หยุดชั่วคราว", live: "กำลังถ่ายทอดสด", waiting: "รอเริ่มนมัสการ",
+          ear: "กรุณาใช้หูฟัง", note: "แปลโดย AI · อาจมีข้อผิดพลาด · หน้าจอจะเปิดค้างไว้ระหว่างฟัง",
+          empty: "คำแปลจะปรากฏที่นี่เมื่อการนมัสการเริ่มต้น", demo: "ตัวอย่าง" },
+    demo: ["วันนี้เราจะมาดูปฐมกาลบทที่ 12 ข้อที่ 1 ด้วยกัน",
+           "พระยาห์เวห์ตรัสกับอับรามว่า เจ้าจงออกจากบ้านเกิดเมืองนอนและจากครอบครัวของเจ้า ไปยังดินแดนที่เราจะแสดงให้เจ้าเห็น",
+           "พระเจ้าทรงเป็นผู้ทรงทำพันธสัญญา",
+           "เราได้รับการนับว่าเป็นผู้ชอบธรรมก็เพราะความเชื่อเท่านั้น",
+           "คำสอนไฮเดลเบิร์กข้อที่ 1 ถามว่า ความปลอบใจเดียวของท่านทั้งในชีวิตและในความตายคืออะไร"] },
+  { code: "zh", native: "中文", en: "Chinese",
+    ui: { listen: "开始收听", pause: "暂停", live: "直播中", waiting: "等待礼拜开始",
+          ear: "请使用耳机", note: "AI 自动翻译 · 可能有误 · 收听时屏幕保持常亮",
+          empty: "礼拜开始后，字幕将显示在这里。", demo: "演示" },
+    demo: ["今天我们一起来看创世记第12章第1节。",
+           "耶和华对亚伯兰说：“你要离开本地、本族、父家，往我所要指示你的地去。”",
+           "神是与人立约的神。",
+           "我们称义，唯独是因着信。",
+           "海德堡要理问答第一问：你在生在死唯一的安慰是什么？"] },
+  { code: "vi", native: "Tiếng Việt", en: "Vietnamese",
+    ui: { listen: "Bắt đầu nghe", pause: "Tạm dừng", live: "Trực tiếp", waiting: "Đang chờ bắt đầu",
+          ear: "Vui lòng dùng tai nghe", note: "Dịch bằng AI · có thể có sai sót · màn hình luôn sáng khi đang nghe",
+          empty: "Phụ đề sẽ hiện ở đây khi buổi thờ phượng bắt đầu.", demo: "DEMO" },
+    demo: ["Hôm nay chúng ta cùng đọc Sáng Thế Ký chương 12 câu 1.",
+           "Đức Giê-hô-va phán cùng Áp-ram: “Hãy ra khỏi quê hương, bà con và nhà cha ngươi, mà đi đến xứ ta sẽ chỉ cho.”",
+           "Đức Chúa Trời là Đấng lập giao ước.",
+           "Chúng ta được xưng công chính chỉ bởi đức tin.",
+           "Sách Giáo Lý Heidelberg, câu hỏi 1: Sự an ủi duy nhất của bạn trong đời sống và trong sự chết là gì?"] },
+  { code: "ko", native: "한국어", en: "Korean captions",
+    ui: { listen: "듣기 시작", pause: "일시정지", live: "생방송 중", waiting: "예배 시작 대기 중",
+          ear: "이어폰을 사용해 주세요", note: "AI 자동 인식 · 오류가 있을 수 있음 · 듣는 동안 화면이 켜져 있습니다",
+          empty: "예배가 시작되면 이곳에 자막이 나옵니다.", demo: "데모" },
+    demo: ["오늘 우리는 창세기 12장 1절 말씀을 함께 묵상하겠습니다.",
+           "여호와께서 아브람에게 이르시되, 너는 너의 고향과 친척과 아버지의 집을 떠나 내가 네게 보여 줄 땅으로 가라.",
+           "하나님은 언약을 맺으시는 분이십니다.",
+           "우리가 의롭다 하심을 받는 것은 오직 믿음으로 말미암습니다.",
+           "하이델베르크 요리문답 제1문은 묻습니다. 살아서나 죽어서나 당신의 유일한 위로는 무엇입니까?"] }
+];
+
+var DEMO = new URLSearchParams(location.search).get("live") !== "1";  // demo until the relay server exists
+var $ = function (id) { return document.getElementById(id); };
+var lang = null, playing = false, demoTimer = null, demoIdx = 0, wakeLock = null;
+
+function store(k, v) { try { v === undefined ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} }
+function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+
+// language buttons
+LANGS.forEach(function (l) {
+  var b = document.createElement("button");
+  b.className = "lang";
+  b.lang = l.code;
+  b.innerHTML = '<div><div class="lang-native"></div><div class="lang-en"></div></div>' +
+    '<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M9 6l6 6-6 6"/></svg>';
+  b.querySelector(".lang-native").textContent = l.native;
+  b.querySelector(".lang-en").textContent = l.en === l.native ? "" : l.en;
+  b.onclick = function () { openLang(l); };
+  $("langs").appendChild(b);
+});
+
+function openLang(l) {
+  lang = l;
+  document.documentElement.lang = l.code;
+  $("langLabel").textContent = l.native;
+  $("playText").textContent = l.ui.listen;
+  $("hintText").textContent = l.ui.ear;
+  $("noteText").textContent = l.ui.note;
+  $("empty").textContent = l.ui.empty;
+  $("demoTag").textContent = l.ui.demo;
+  $("demoTag").hidden = !DEMO;
+  setStatus("waiting");
+  $("pick").classList.remove("active");
+  $("listen").classList.add("active");
+  store("lang", l.code);
+}
+
+function setStatus(s) {
+  $("status").className = "chip status " + s;
+  $("statusText").textContent = s === "live" ? lang.ui.live : lang.ui.waiting;
+}
+
+function addLine(text) {
+  $("empty").style.display = "none";
+  var feed = $("feed");
+  var lines = feed.querySelectorAll(".line");
+  lines.forEach(function (n) { n.classList.remove("current", "prev"); });
+  if (lines.length) lines[lines.length - 1].classList.add("prev");
+  var d = document.createElement("div");
+  d.className = "line current";
+  d.textContent = text;
+  feed.appendChild(d);
+  var all = feed.querySelectorAll(".line");
+  if (all.length > 30) feed.removeChild(all[0]);
+  feed.scrollTop = feed.scrollHeight;
+}
+
+function togglePlay() {
+  playing = !playing;
+  $("play").classList.toggle("on", playing);
+  $("playIcon").innerHTML = playing ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>';
+  $("playText").textContent = playing ? lang.ui.pause : lang.ui.listen;
+  if (playing) { keepAwake(); startDemo(); } else { releaseAwake(); stopDemo(); }
+}
+
+// Demo: plays the sample sentences so the layout can be judged on a real phone.
+function startDemo() {
+  if (!DEMO) return;
+  setStatus("live");
+  var tick = function () { addLine(lang.demo[demoIdx % lang.demo.length]); demoIdx++; };
+  tick();
+  demoTimer = setInterval(tick, 3500);
+}
+function stopDemo() { clearInterval(demoTimer); demoTimer = null; }
+
+// Keep the phone screen on while listening (where the browser supports it).
+function keepAwake() {
+  if (!("wakeLock" in navigator)) return;
+  navigator.wakeLock.request("screen").then(function (w) { wakeLock = w; }).catch(function () {});
+}
+function releaseAwake() { if (wakeLock) { wakeLock.release(); wakeLock = null; } }
+document.addEventListener("visibilitychange", function () {
+  if (playing && document.visibilityState === "visible") keepAwake();
+});
+
+$("play").onclick = togglePlay;
+$("back").onclick = function () {
+  if (playing) togglePlay();
+  $("listen").classList.remove("active");
+  $("pick").classList.add("active");
+};
+var size = parseInt(load("size") || "26", 10);
+function applySize() { document.documentElement.style.setProperty("--caption-size", size + "px"); store("size", String(size)); }
+$("smaller").onclick = function () { size = Math.max(18, size - 3); applySize(); };
+$("bigger").onclick = function () { size = Math.min(44, size + 3); applySize(); };
+applySize();
+
+// Returning visitors go straight to their language.
+var saved = load("lang");
+if (saved) LANGS.forEach(function (l) { if (l.code === saved) openLang(l); });
+</script>
+</body>
+</html>
