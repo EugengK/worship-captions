@@ -93,7 +93,7 @@ def load_glossary(path: Path) -> list:
         return []
 
 
-def build_prompt(sentence: str, context: list, glossary: list, langs: list) -> str:
+def build_prompt(sentence: str, context: list, glossary: list, langs: list, notes: str = "") -> str:
     """Prompt for one sentence. Only glossary terms that occur in the sentence are included."""
     used = [t for t in glossary if t.get("ko") and t["ko"] in sentence]
     lines = [
@@ -101,6 +101,8 @@ def build_prompt(sentence: str, context: list, glossary: list, langs: list) -> s
         "Return JSON with exactly these keys: " + ", ".join(langs) + ".",
         "Each value is a natural, faithful translation of the sentence only, short enough for a projector caption.",
         "Do not add explanations. Bible quotations should read like a standard Bible translation in that language.",
+        "The Korean comes from live speech recognition and may have recognition errors (odd spacing, misheard names); "
+        "translate what the preacher meant.",
     ]
     for code in langs:
         lines.append(f'- "{code}": {LANG_NAMES.get(code, code)}')
@@ -108,6 +110,8 @@ def build_prompt(sentence: str, context: list, glossary: list, langs: list) -> s
         lines.append("Use these church terms exactly:")
         for t in used:
             lines.append("  " + t["ko"] + " = " + "; ".join(f"{c}: {t[c]}" for c in langs if t.get(c)))
+    if notes:
+        lines.append("Notes about today's sermon (use them to resolve misheard names and terms): " + notes)
     if context:
         lines.append("Previous sentences (context only, do not translate):")
         lines.extend("  " + c for c in context)
@@ -117,18 +121,24 @@ def build_prompt(sentence: str, context: list, glossary: list, langs: list) -> s
 
 
 class GeminiTranslator:
-    def __init__(self, langs: list, glossary: list, model: str = DEFAULT_TRANSLATE_MODEL):
+    def __init__(self, langs: list, glossary: list, model: str = DEFAULT_TRANSLATE_MODEL, think_budget: int = 0,
+                 notes: str = ""):
         from google import genai
         from google.genai import types
         self.types = types
         self.client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
         self.langs, self.glossary, self.model = langs, glossary, model
+        # Thinking off: measured ~1.1 s per sentence instead of ~5.4 s with the same output quality.
+        self.think_budget = think_budget
+        self.notes = notes
 
     async def translate(self, sentence: str, context: list) -> dict:
         resp = await self.client.aio.models.generate_content(
             model=self.model,
-            contents=build_prompt(sentence, context, self.glossary, self.langs),
-            config=self.types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2),
+            contents=build_prompt(sentence, context, self.glossary, self.langs, self.notes),
+            config=self.types.GenerateContentConfig(
+                response_mime_type="application/json", temperature=0.2,
+                thinking_config=self.types.ThinkingConfig(thinking_budget=self.think_budget)),
         )
         data = json.loads(resp.text)
         return {c: str(data.get(c, "")).strip() for c in self.langs}
@@ -204,7 +214,7 @@ class GeminiTranscriber:
                             chunk = await queue.get()
                             if chunk is None:
                                 done = True
-                                await asyncio.sleep(3)  # let the last words come back
+                                await asyncio.sleep(6)  # let the last words come back
                                 return
                             await s.send_realtime_input(
                                 audio=self.types.Blob(data=chunk, mime_type=f"audio/pcm;rate={SAMPLE_RATE}"))
@@ -256,24 +266,30 @@ class Engine:
 
     async def on_text(self, fragment: str) -> None:
         for sentence in self.buffer.feed(fragment, time.monotonic()):
-            await self.pending.put(sentence)
+            self._start(sentence)
+
+    def _start(self, sentence: str) -> None:
+        """Starts translating at once (sentences overlap) but keeps them in spoken order."""
+        task = asyncio.create_task(self.translator.translate(sentence, self.context[-3:]))
+        self.context.append(sentence)
+        self.pending.put_nowait((sentence, task))
 
     async def _idle_flusher(self) -> None:
         while True:
             await asyncio.sleep(0.3)
             s = self.buffer.flush_if_idle(time.monotonic())
             if s:
-                await self.pending.put(s)
+                self._start(s)
 
     async def _translate_loop(self) -> None:
         while True:
-            sentence = await self.pending.get()
+            sentence, task = await self.pending.get()
             try:
-                out = await self.translator.translate(sentence, self.context[-3:])
+                out = await task
             except Exception as e:
                 log.warning("translation failed: %s", e)
+                self.pending.task_done()
                 continue
-            self.context.append(sentence)
             lines = [{"lang": c, "text": out[c]} for c in self.langs if out.get(c)]
             if lines:
                 await self.hub.send({"type": "caption", "lines": lines})
@@ -282,6 +298,7 @@ class Engine:
                 with self.logfile.open("a", encoding="utf-8") as f:
                     f.write(json.dumps({"t": dt.datetime.now().isoformat(timespec="seconds"),
                                         "ko": sentence, **out}, ensure_ascii=False) + "\n")
+            self.pending.task_done()
 
     async def run(self, audio_task_factory) -> None:
         audio = asyncio.Queue()
@@ -289,9 +306,11 @@ class Engine:
                  asyncio.create_task(audio_task_factory(audio))]
         try:
             await self.transcriber.run(audio, self.on_text)
-            while not self.pending.empty():  # finish the last sentences after a file replay
-                await asyncio.sleep(0.5)
-            await asyncio.sleep(2)
+            rest = self.buffer.text.strip()  # words still waiting for a full stop
+            if rest:
+                self.buffer.text = ""
+                self._start(rest)
+            await self.pending.join()  # finish the last sentences after a file replay
         finally:
             for t in tasks:
                 t.cancel()
@@ -305,6 +324,8 @@ async def main() -> None:
     p.add_argument("--glossary", default=str(HERE / "glossary.json"))
     p.add_argument("--stt-model", default=DEFAULT_STT_MODEL)
     p.add_argument("--translate-model", default=DEFAULT_TRANSLATE_MODEL)
+    p.add_argument("--notes", default="", help='today\'s passage and names, e.g. "창세기 12:1-9. 이 본문에서는 아브람(Abram)"')
+    p.add_argument("--think-budget", type=int, default=0, help="translation model thinking budget (0 = off, fastest)")
     args = p.parse_args()
 
     langs = [c.strip() for c in args.langs.split(",") if c.strip()]
@@ -313,7 +334,8 @@ async def main() -> None:
     logfile = logdir / dt.datetime.now().strftime("%Y%m%d-%H%M.jsonl")
 
     engine = Engine(GeminiTranscriber(args.stt_model),
-                    GeminiTranslator(langs, load_glossary(Path(args.glossary)), args.translate_model),
+                    GeminiTranslator(langs, load_glossary(Path(args.glossary)), args.translate_model, args.think_budget,
+                                     args.notes),
                     HubClient(args.hub), langs, logfile)
     source = (lambda q: file_chunks(q, args.file)) if args.file else mic_chunks
     log.info("captions: %s, transcript log: %s", ",".join(langs), logfile)

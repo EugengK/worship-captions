@@ -106,6 +106,33 @@ def test_engine_sends_captions_through_hub(hub, tmp_path):
     assert msgs[0] == {"type": "caption", "lines": [
         {"lang": "en", "text": "EN<하나님은 언약을 맺으십니다.>"},
         {"lang": "th", "text": "TH<하나님은 언약을 맺으십니다.>"}]}
-    assert msgs[1]["lines"][0]["text"] == "EN<아멘>"  # flushed after the pause
+    assert msgs[1]["lines"][0]["text"] == "EN<아멘>"  # no full stop: flushed when speech ends
     log = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [entry["ko"] for entry in log] == ["하나님은 언약을 맺으십니다.", "아멘"]
+
+
+class SlowFirstTranslator:
+    """First sentence takes longest, so concurrent translations finish out of order."""
+
+    def __init__(self):
+        self.n = 0
+
+    async def translate(self, sentence, context):
+        self.n += 1
+        await asyncio.sleep(0.4 if self.n == 1 else 0.05)
+        return {"en": sentence, "th": sentence}
+
+
+def test_captions_keep_spoken_order_when_translations_overlap(hub, tmp_path):
+    async def scenario():
+        async with websockets.connect(hub) as screen:
+            engine = Engine(StubTranscriber(["첫째. ", "둘째. ", "셋째. "]), SlowFirstTranslator(),
+                            HubClient(hub), ["en"], None)
+
+            async def no_audio(q):
+                await asyncio.Future()
+
+            await engine.run(no_audio)
+            return [json.loads(await asyncio.wait_for(screen.recv(), 1.0))["lines"][0]["text"] for _ in range(3)]
+
+    assert asyncio.run(scenario()) == ["첫째.", "둘째.", "셋째."]
