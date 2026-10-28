@@ -13,5 +13,5 @@
 - 엔진: Google `gemini-3.5-live-translate-preview` 주 엔진 + OpenAI `gpt-realtime-translate` 선택/자동 대체. 엔진 교체형 구조.
 - 언어: 태국어 최우선(화면 자막), 영어 기준으로 검증. 원고 기반 번역 + 운영자 없는 자동 원고 추적.
 - 화면: 성도 휴대폰 웹페이지(`web/listener.html`). 프로젝터는 **이음오피스(pblsketch/openoffice) 포크의 청중 화면에 자막 띠 통합**이 주안(docs/10). macOS 12+ 필요 → 위의 다른 MacBook 사용. 1단계(이음오피스로 주일 pptx 재생 시험) 실패 시 Keynote + 투명 오버레이(A안)로 복귀.
-- 코드 위치: `ieumoffice/`(이음오피스 자막 띠 패치 + 맥 설치 스크립트, 원본 커밋 고정), `hub/caption_hub.py`(맥에서 도는 자막 허브, ws://localhost:8765, `--demo`), `web/listener.html`(성도 휴대폰), `experiments/`(Gemini 시험).
+- 코드 위치: `ieumoffice/`(이음오피스 자막 띠 패치 + 맥 설치 스크립트, 원본 커밋 고정), `hub/caption_hub.py`(맥에서 도는 자막 허브, ws://localhost:8765, `--demo`), `hub/live_engine.py`(마이크→Gemini 한국어 인식→용어집 번역→허브, 테스트 `hub/tests`), `web/captions.html`(브라우저용 자막 화면), `web/listener.html`(성도 휴대폰), `experiments/`(Gemini 시험).
 - API 키는 환경 변수 `GEMINI_API_KEY`, `OPENAI_API_KEY`. 절대 커밋하지 말 것.
