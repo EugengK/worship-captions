@@ -34,9 +34,10 @@ log = logging.getLogger("live-engine")
 HERE = Path(__file__).resolve().parent
 LANG_NAMES = {"en": "English", "th": "Thai", "zh": "Simplified Chinese", "vi": "Vietnamese", "ko": "Korean"}
 
-# The live-translate model is the one tested in docs/06; it also returns the Korean input
-# transcription, which is all this engine uses from it.
-DEFAULT_STT_MODEL = "gemini-3.5-live-translate-preview"
+# Transcription-only Live model: Korean text, no audio output to pay for (docs/13). The
+# live-translate model also works (it returns the Korean input transcription too) but
+# generates English speech that the captions do not use.
+DEFAULT_STT_MODEL = "gemini-3.5-transcribe-live"
 DEFAULT_TRANSLATE_MODEL = "gemini-3.5-flash"
 
 SAMPLE_RATE = 16000
@@ -194,9 +195,16 @@ class GeminiTranscriber:
 
     def _config(self):
         t = self.types
-        cfg = dict(response_modalities=["AUDIO"], input_audio_transcription=t.AudioTranscriptionConfig())
+        modality = "TEXT" if "transcribe" in self.model else "AUDIO"
+        cfg = dict(response_modalities=[modality], input_audio_transcription=t.AudioTranscriptionConfig())
         if "translate" in self.model:
             cfg["translation_config"] = t.TranslationConfig(target_language_code="en")
+        else:
+            # Default end-of-speech detection waits for long pauses and delivered sermon text up
+            # to ~20 s late in bursts; high sensitivity returns each sentence ~0.5-1 s after it ends.
+            cfg["realtime_input_config"] = t.RealtimeInputConfig(
+                automatic_activity_detection=t.AutomaticActivityDetection(
+                    end_of_speech_sensitivity=t.EndSensitivity.END_SENSITIVITY_HIGH, silence_duration_ms=200))
         return t.LiveConnectConfig(**cfg)
 
     async def run(self, queue: asyncio.Queue, on_text) -> None:
