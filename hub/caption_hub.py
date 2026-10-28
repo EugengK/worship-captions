@@ -39,9 +39,10 @@ DEMO = [
 ]
 
 
-async def broadcast(message: str) -> None:
-    if clients:
-        websockets.broadcast(clients, message)
+async def broadcast(message: str, sender=None) -> None:
+    targets = clients - {sender} if sender else clients
+    if targets:
+        websockets.broadcast(targets, message)
 
 
 async def handler(ws) -> None:
@@ -54,7 +55,7 @@ async def handler(ws) -> None:
             except ValueError:
                 continue
             if msg.get("type") in ("caption", "clear"):
-                await broadcast(json.dumps(msg, ensure_ascii=False))
+                await broadcast(json.dumps(msg, ensure_ascii=False), sender=ws)
     finally:
         clients.discard(ws)
         log.info("client disconnected (%d total)", len(clients))

@@ -1,0 +1,4 @@
+websockets>=13
+google-genai>=2.0
+numpy
+sounddevice

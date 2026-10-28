@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Captions</title>
+<style>
+  /* Full-window caption screen for any browser. Connects to the caption hub on this computer.
+     Options (URL): ?hub=ws://localhost:8765  ?bg=green (chroma key) / ?bg=black (default) */
+  :root { --bg: #000; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Noto Sans Thai", "Thonburi", "Apple SD Gothic Neo", "PingFang SC", sans-serif; }
+  #band {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    padding: 1.4vh 4vw 2.2vh; background: rgba(0, 0, 0, .72);
+    text-align: center; line-height: 1.3;
+    opacity: 0; transition: opacity .6s ease;
+  }
+  #band.on { opacity: 1; }
+  .l { font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .l0 { color: #fff; font-size: 2.5vw; }
+  .l1 { color: #ffe08a; font-size: 2.3vw; margin-top: .6vh; }
+  .l2 { color: #9fd3ff; font-size: 2.1vw; margin-top: .6vh; }
+  #status { position: fixed; top: 8px; right: 12px; font: 12px sans-serif; color: #666; }
+</style>
+</head>
+<body>
+<div id="band" aria-live="polite"></div>
+<div id="status">connecting…</div>
+<script>
+  var q = new URLSearchParams(location.search);
+  if (q.get("bg") === "green") document.documentElement.style.setProperty("--bg", "#00b140");
+  var url = q.get("hub") || "ws://localhost:8765";
+  var band = document.getElementById("band"), statusEl = document.getElementById("status");  // not "status": that is window.status
+  var hideTimer;
+
+  function show(lines) {
+    band.innerHTML = "";
+    lines.forEach(function (l, i) {
+      var d = document.createElement("div");
+      d.className = "l l" + Math.min(i, 2);
+      d.lang = l.lang;
+      d.textContent = l.text;
+      band.appendChild(d);
+    });
+    band.classList.add("on");
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(function () { band.classList.remove("on"); }, 8000);  // same as the slideshow band
+  }
+
+  function connect() {
+    var ws = new WebSocket(url);
+    ws.onopen = function () { statusEl.textContent = "●"; statusEl.style.color = "#3c6"; };
+    ws.onmessage = function (ev) {
+      var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.type === "caption" && m.lines) show(m.lines.filter(function (l) { return l && l.text; }));
+      if (m.type === "clear") band.classList.remove("on");
+    };
+    ws.onclose = function () { statusEl.textContent = "reconnecting…"; statusEl.style.color = "#a66"; setTimeout(connect, 3000); };
+  }
+  connect();
+</script>
+</body>
+</html>

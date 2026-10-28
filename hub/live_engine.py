@@ -1,0 +1,328 @@
+"""Live caption engine: microphone -> Korean transcript -> translated captions -> caption hub.
+
+    python3 live_engine.py                       # Mac microphone, English + Thai
+    python3 live_engine.py --langs en,th,zh      # pick caption languages (first line = first language)
+    python3 live_engine.py --file sermon.wav     # replay a recording at real-time speed (for testing)
+
+Pipeline
+  1. Audio (16 kHz mono PCM, 100 ms chunks) from the default input device or a WAV file.
+  2. A Gemini Live session turns it into Korean text fragments (input transcription).
+  3. Fragments are joined into sentences (punctuation, or a pause, or a length cap).
+  4. Each sentence is translated by a Gemini text model with the church glossary and the
+     previous sentences as context, into every caption language in one call.
+  5. The result is sent to the caption hub (ws://localhost:8765), which forwards it to the
+     slideshow caption band and any other screen.
+
+Requires GEMINI_API_KEY in the environment. Start caption_hub.py first.
+"""
+
+import argparse
+import asyncio
+import datetime as dt
+import json
+import logging
+import os
+import re
+import time
+import wave
+from pathlib import Path
+
+import websockets
+
+log = logging.getLogger("live-engine")
+
+HERE = Path(__file__).resolve().parent
+LANG_NAMES = {"en": "English", "th": "Thai", "zh": "Simplified Chinese", "vi": "Vietnamese", "ko": "Korean"}
+
+# The live-translate model is the one tested in docs/06; it also returns the Korean input
+# transcription, which is all this engine uses from it.
+DEFAULT_STT_MODEL = "gemini-3.5-live-translate-preview"
+DEFAULT_TRANSLATE_MODEL = "gemini-3.5-flash"
+
+SAMPLE_RATE = 16000
+CHUNK_BYTES = SAMPLE_RATE * 2 // 10  # 100 ms of 16-bit mono
+
+
+# ---------------------------------------------------------------- sentences
+
+class SentenceBuffer:
+    """Joins transcript fragments into sentences for captioning.
+
+    A sentence ends at . ? ! (or their full-width forms), after `idle_s` seconds without new
+    fragments, or once it grows past `max_chars` (long run-on speech still gets captioned).
+    """
+
+    END = re.compile(r"(.+?[.?!。？！])(\s+|$)", re.S)
+
+    def __init__(self, idle_s: float = 1.6, max_chars: int = 140):
+        self.idle_s = idle_s
+        self.max_chars = max_chars
+        self.text = ""
+        self.last = 0.0
+
+    def feed(self, fragment: str, now: float) -> list:
+        self.text += fragment
+        self.last = now
+        out = []
+        while True:
+            m = self.END.match(self.text)
+            if not m:
+                break
+            out.append(m.group(1).strip())
+            self.text = self.text[m.end():]
+        if len(self.text) > self.max_chars:
+            cut = self.text.rfind(" ", 0, self.max_chars)
+            cut = cut if cut > self.max_chars // 2 else self.max_chars
+            out.append(self.text[:cut].strip())
+            self.text = self.text[cut:]
+        return [s for s in out if s]
+
+    def flush_if_idle(self, now: float):
+        if self.text.strip() and now - self.last >= self.idle_s:
+            s, self.text = self.text.strip(), ""
+            return s
+        return None
+
+
+# ---------------------------------------------------------------- translation
+
+def load_glossary(path: Path) -> list:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("terms", [])
+    except FileNotFoundError:
+        return []
+
+
+def build_prompt(sentence: str, context: list, glossary: list, langs: list) -> str:
+    """Prompt for one sentence. Only glossary terms that occur in the sentence are included."""
+    used = [t for t in glossary if t.get("ko") and t["ko"] in sentence]
+    lines = [
+        "Translate the Korean sentence from a live church sermon into captions.",
+        "Return JSON with exactly these keys: " + ", ".join(langs) + ".",
+        "Each value is a natural, faithful translation of the sentence only, short enough for a projector caption.",
+        "Do not add explanations. Bible quotations should read like a standard Bible translation in that language.",
+    ]
+    for code in langs:
+        lines.append(f'- "{code}": {LANG_NAMES.get(code, code)}')
+    if used:
+        lines.append("Use these church terms exactly:")
+        for t in used:
+            lines.append("  " + t["ko"] + " = " + "; ".join(f"{c}: {t[c]}" for c in langs if t.get(c)))
+    if context:
+        lines.append("Previous sentences (context only, do not translate):")
+        lines.extend("  " + c for c in context)
+    lines.append("Sentence to translate:")
+    lines.append(sentence)
+    return "\n".join(lines)
+
+
+class GeminiTranslator:
+    def __init__(self, langs: list, glossary: list, model: str = DEFAULT_TRANSLATE_MODEL):
+        from google import genai
+        from google.genai import types
+        self.types = types
+        self.client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+        self.langs, self.glossary, self.model = langs, glossary, model
+
+    async def translate(self, sentence: str, context: list) -> dict:
+        resp = await self.client.aio.models.generate_content(
+            model=self.model,
+            contents=build_prompt(sentence, context, self.glossary, self.langs),
+            config=self.types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2),
+        )
+        data = json.loads(resp.text)
+        return {c: str(data.get(c, "")).strip() for c in self.langs}
+
+
+# ---------------------------------------------------------------- audio sources
+
+async def mic_chunks(queue: asyncio.Queue) -> None:
+    import sounddevice as sd  # imported here so --file tests do not need PortAudio
+    loop = asyncio.get_running_loop()
+
+    def callback(indata, frames, t, status):
+        loop.call_soon_threadsafe(queue.put_nowait, bytes(indata))
+
+    with sd.RawInputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16",
+                           blocksize=CHUNK_BYTES // 2, callback=callback):
+        log.info("listening on the default microphone")
+        await asyncio.Future()
+
+
+async def file_chunks(queue: asyncio.Queue, path: str) -> None:
+    """Replays a 16-bit WAV at real-time speed (resampled to 16 kHz mono), then 3 s of silence."""
+    import numpy as np
+    with wave.open(path) as w:
+        sr, ch = w.getframerate(), w.getnchannels()
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32)
+    if ch > 1:
+        pcm = pcm.reshape(-1, ch).mean(axis=1)
+    n = int(len(pcm) * SAMPLE_RATE / sr)
+    pcm = np.interp(np.linspace(0, len(pcm) - 1, n), np.arange(len(pcm)), pcm).astype(np.int16).tobytes()
+    pcm += b"\0" * SAMPLE_RATE * 2 * 3
+    for i in range(0, len(pcm), CHUNK_BYTES):
+        await queue.put(pcm[i:i + CHUNK_BYTES])
+        await asyncio.sleep(0.1)
+    await queue.put(None)
+
+
+# ---------------------------------------------------------------- transcription
+
+class GeminiTranscriber:
+    """Streams audio into a Gemini Live session and reports Korean transcript fragments.
+
+    Live sessions have a time limit, so the session is reopened whenever it closes; audio that
+    queued up during a reconnect is dropped beyond the last 2 s so captions stay current.
+    """
+
+    def __init__(self, model: str = DEFAULT_STT_MODEL):
+        from google import genai
+        from google.genai import types
+        self.types = types
+        self.client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+        self.model = model
+
+    def _config(self):
+        t = self.types
+        cfg = dict(response_modalities=["AUDIO"], input_audio_transcription=t.AudioTranscriptionConfig())
+        if "translate" in self.model:
+            cfg["translation_config"] = t.TranslationConfig(target_language_code="en")
+        return t.LiveConnectConfig(**cfg)
+
+    async def run(self, queue: asyncio.Queue, on_text) -> None:
+        done = False
+        while not done:
+            try:
+                async with self.client.aio.live.connect(model=self.model, config=self._config()) as s:
+                    log.info("transcription session open (%s)", self.model)
+                    while queue.qsize() > 20:
+                        queue.get_nowait()
+
+                    async def send():
+                        nonlocal done
+                        while True:
+                            chunk = await queue.get()
+                            if chunk is None:
+                                done = True
+                                await asyncio.sleep(3)  # let the last words come back
+                                return
+                            await s.send_realtime_input(
+                                audio=self.types.Blob(data=chunk, mime_type=f"audio/pcm;rate={SAMPLE_RATE}"))
+
+                    async def recv():
+                        async for m in s.receive():
+                            sc = m.server_content
+                            if sc and sc.input_transcription and sc.input_transcription.text:
+                                await on_text(sc.input_transcription.text)
+
+                    sender, receiver = asyncio.create_task(send()), asyncio.create_task(recv())
+                    await asyncio.wait({sender, receiver}, return_when=asyncio.FIRST_COMPLETED)
+                    for task in (sender, receiver):
+                        task.cancel()
+            except Exception as e:  # network drop, session limit, quota
+                log.warning("transcription session ended: %s", e)
+                if "credits are depleted" in str(e) or "API key not valid" in str(e):
+                    raise
+                await asyncio.sleep(1)
+
+
+# ---------------------------------------------------------------- hub output
+
+class HubClient:
+    def __init__(self, url: str):
+        self.url, self.ws = url, None
+
+    async def send(self, msg: dict) -> None:
+        for _ in range(2):
+            try:
+                if self.ws is None:
+                    self.ws = await websockets.connect(self.url)
+                await self.ws.send(json.dumps(msg, ensure_ascii=False))
+                return
+            except Exception as e:
+                log.warning("caption hub not reachable (%s): %s", self.url, e)
+                self.ws = None
+
+
+# ---------------------------------------------------------------- engine
+
+class Engine:
+    def __init__(self, transcriber, translator, hub, langs: list, logfile: Path = None):
+        self.transcriber, self.translator, self.hub, self.langs = transcriber, translator, hub, langs
+        self.buffer = SentenceBuffer()
+        self.context = []
+        self.logfile = logfile
+        self.pending = asyncio.Queue()
+
+    async def on_text(self, fragment: str) -> None:
+        for sentence in self.buffer.feed(fragment, time.monotonic()):
+            await self.pending.put(sentence)
+
+    async def _idle_flusher(self) -> None:
+        while True:
+            await asyncio.sleep(0.3)
+            s = self.buffer.flush_if_idle(time.monotonic())
+            if s:
+                await self.pending.put(s)
+
+    async def _translate_loop(self) -> None:
+        while True:
+            sentence = await self.pending.get()
+            try:
+                out = await self.translator.translate(sentence, self.context[-3:])
+            except Exception as e:
+                log.warning("translation failed: %s", e)
+                continue
+            self.context.append(sentence)
+            lines = [{"lang": c, "text": out[c]} for c in self.langs if out.get(c)]
+            if lines:
+                await self.hub.send({"type": "caption", "lines": lines})
+            log.info("%s -> %s", sentence, " | ".join(l["text"] for l in lines))
+            if self.logfile:
+                with self.logfile.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({"t": dt.datetime.now().isoformat(timespec="seconds"),
+                                        "ko": sentence, **out}, ensure_ascii=False) + "\n")
+
+    async def run(self, audio_task_factory) -> None:
+        audio = asyncio.Queue()
+        tasks = [asyncio.create_task(self._idle_flusher()), asyncio.create_task(self._translate_loop()),
+                 asyncio.create_task(audio_task_factory(audio))]
+        try:
+            await self.transcriber.run(audio, self.on_text)
+            while not self.pending.empty():  # finish the last sentences after a file replay
+                await asyncio.sleep(0.5)
+            await asyncio.sleep(2)
+        finally:
+            for t in tasks:
+                t.cancel()
+
+
+async def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--langs", default="en,th", help="caption languages, in display order (default en,th)")
+    p.add_argument("--file", help="replay this WAV instead of using the microphone")
+    p.add_argument("--hub", default="ws://localhost:8765")
+    p.add_argument("--glossary", default=str(HERE / "glossary.json"))
+    p.add_argument("--stt-model", default=DEFAULT_STT_MODEL)
+    p.add_argument("--translate-model", default=DEFAULT_TRANSLATE_MODEL)
+    args = p.parse_args()
+
+    langs = [c.strip() for c in args.langs.split(",") if c.strip()]
+    logdir = HERE / "logs"
+    logdir.mkdir(exist_ok=True)
+    logfile = logdir / dt.datetime.now().strftime("%Y%m%d-%H%M.jsonl")
+
+    engine = Engine(GeminiTranscriber(args.stt_model),
+                    GeminiTranslator(langs, load_glossary(Path(args.glossary)), args.translate_model),
+                    HubClient(args.hub), langs, logfile)
+    source = (lambda q: file_chunks(q, args.file)) if args.file else mic_chunks
+    log.info("captions: %s, transcript log: %s", ",".join(langs), logfile)
+    await engine.run(source)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

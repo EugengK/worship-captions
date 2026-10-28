@@ -2,3 +2,6 @@ venv/
 .env
 *.wav
 experiments/out/
+hub/logs/
+__pycache__/
+.pytest_cache/
