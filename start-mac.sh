@@ -6,6 +6,7 @@
 #   bash start-mac.sh                   # 3단계: 마이크로 실시간 번역 (영어+태국어)
 #   LANGS=en,th,zh bash start-mac.sh    # 자막 언어 바꾸기
 #   NOTES="창세기 12:1-9. 이 본문에서는 아브람(Abram)" bash start-mac.sh   # 오늘 본문 메모
+#   bash start-mac.sh reset-key         # 저장된 API 키를 지우고 다시 입력
 #
 # 처음 실행할 때 필요한 프로그램을 설치하고 Gemini API 키를 한 번 묻습니다.
 # 키는 이 폴더의 .env 파일에만 저장되며 GitHub에는 올라가지 않습니다(.gitignore).
@@ -14,6 +15,18 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 MODE="${1:-live}"
+
+if [ "$MODE" = "reset-key" ]; then
+  rm -f .env
+  echo "저장된 키를 지웠습니다. 다음 실행 때 키를 다시 묻습니다."
+  exit 0
+fi
+
+# Asks Google whether a key works (prints only the HTTP status, never the key).
+key_ok() {
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+        -H "x-goog-api-key: $1" 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1')" = "200" ]
+}
 LANGS="${LANGS:-en,th}"
 NOTES="${NOTES:-}"
 
@@ -30,11 +43,28 @@ if [ ! -x .venv/bin/python ]; then
 fi
 
 if [ "$MODE" != "demo" ]; then
-  if [ ! -f .env ]; then
-    read -rsp "Gemini API 키를 붙여넣고 Enter를 누르세요 (화면에 보이지 않습니다): " KEY; echo
-    printf 'GEMINI_API_KEY=%s\n' "$KEY" > .env
-    chmod 600 .env
+  if [ -f .env ]; then
+    set -a; . ./.env; set +a
+    if ! key_ok "${GEMINI_API_KEY:-}"; then
+      echo "저장된 Gemini 키가 거절되었습니다. 키를 다시 입력해 주세요."
+      rm -f .env
+    fi
   fi
+  tries=0
+  while [ ! -f .env ]; do
+    tries=$((tries + 1))
+    [ "$tries" -gt 3 ] && { echo "키 확인에 3번 실패했습니다. AI Studio에서 키를 새로 복사해 다시 실행하세요."; exit 1; }
+    read -rsp "Gemini API 키를 붙여넣고 Enter를 누르세요 (화면에 보이지 않습니다): " KEY; echo
+    # 붙여넣을 때 딸려 온 공백·줄바꿈·따옴표, "GEMINI_API_KEY=" 앞부분을 지웁니다.
+    KEY="$(printf '%s' "$KEY" | tr -d '[:space:]"'"'"'' | sed 's/^GEMINI_API_KEY=//')"
+    if key_ok "$KEY"; then
+      printf 'GEMINI_API_KEY=%s\n' "$KEY" > .env
+      chmod 600 .env
+      echo "키 확인 완료. 저장했습니다."
+    else
+      echo "Google이 이 키를 거절했습니다. AI Studio(https://aistudio.google.com/apikey)에서 키 전체를 다시 복사해 붙여넣으세요."
+    fi
+  done
   set -a; . ./.env; set +a
 fi
 
@@ -55,6 +85,7 @@ case "$MODE" in
     ;;
   file)
     [ -n "${2:-}" ] || { echo "사용법: bash start-mac.sh file 녹음파일.wav"; exit 1; }
+    [ -f "$2" ] || { echo "파일을 찾을 수 없습니다: $2"; exit 1; }
     .venv/bin/python hub/live_engine.py --file "$2" --langs "$LANGS" --notes "$NOTES"
     echo "녹음 파일 번역이 끝났습니다. 기록: hub/logs/"
     ;;

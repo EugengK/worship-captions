@@ -136,3 +136,12 @@ def test_captions_keep_spoken_order_when_translations_overlap(hub, tmp_path):
             return [json.loads(await asyncio.wait_for(screen.recv(), 1.0))["lines"][0]["text"] for _ in range(3)]
 
     assert asyncio.run(scenario()) == ["첫째.", "둘째.", "셋째."]
+
+
+def test_fatal_errors_are_recognised_and_key_is_redacted(monkeypatch):
+    from live_engine import is_fatal, redact
+    monkeypatch.setenv("GEMINI_API_KEY", "SECRET123")
+    assert is_fatal("1007 invalid x-goog-api-key")
+    assert is_fatal("Your project has exceeded its monthly spending cap.")
+    assert not is_fatal("keepalive ping timeout")
+    assert redact("bad key SECRET123 rejected") == "bad key *** rejected"

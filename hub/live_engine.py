@@ -177,6 +177,27 @@ async def file_chunks(queue: asyncio.Queue, path: str) -> None:
     await queue.put(None)
 
 
+# ---------------------------------------------------------------- errors
+
+class FatalError(Exception):
+    """Retrying cannot help (bad key, no credit): stop and tell the person what to fix."""
+
+
+FATAL_HINTS = ("api key", "api_key", "x-goog-api-key", "credits are depleted", "spending cap",
+               "permission_denied", "unauthenticated", "billing")
+
+
+def is_fatal(message: str) -> bool:
+    m = message.lower()
+    return any(h in m for h in FATAL_HINTS)
+
+
+def redact(text: str) -> str:
+    """Never print the API key, even when an error message echoes it."""
+    key = os.environ.get("GEMINI_API_KEY", "")
+    return text.replace(key, "***") if key else text
+
+
 # ---------------------------------------------------------------- transcription
 
 class GeminiTranscriber:
@@ -238,9 +259,10 @@ class GeminiTranscriber:
                     for task in (sender, receiver):
                         task.cancel()
             except Exception as e:  # network drop, session limit, quota
-                log.warning("transcription session ended: %s", e)
-                if "credits are depleted" in str(e) or "API key not valid" in str(e):
-                    raise
+                msg = redact(str(e))
+                if is_fatal(msg):
+                    raise FatalError(msg) from None
+                log.warning("transcription session ended, reconnecting: %s", msg)
                 await asyncio.sleep(1)
 
 
@@ -295,7 +317,10 @@ class Engine:
             try:
                 out = await task
             except Exception as e:
-                log.warning("translation failed: %s", e)
+                msg = redact(str(e))
+                if is_fatal(msg):
+                    raise FatalError(msg) from None
+                log.warning("translation failed: %s", msg)
                 self.pending.task_done()
                 continue
             lines = [{"lang": c, "text": out[c]} for c in self.langs if out.get(c)]
@@ -310,10 +335,16 @@ class Engine:
 
     async def run(self, audio_task_factory) -> None:
         audio = asyncio.Queue()
-        tasks = [asyncio.create_task(self._idle_flusher()), asyncio.create_task(self._translate_loop()),
+        translator = asyncio.create_task(self._translate_loop())
+        tasks = [asyncio.create_task(self._idle_flusher()), translator,
                  asyncio.create_task(audio_task_factory(audio))]
         try:
-            await self.transcriber.run(audio, self.on_text)
+            listener = asyncio.create_task(self.transcriber.run(audio, self.on_text))
+            await asyncio.wait({listener, translator}, return_when=asyncio.FIRST_COMPLETED)
+            if translator.done():  # only ends early on a fatal error
+                listener.cancel()
+                translator.result()
+            await listener
             rest = self.buffer.text.strip()  # words still waiting for a full stop
             if rest:
                 self.buffer.text = ""
@@ -358,3 +389,9 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+    except FatalError as e:
+        print("\n중단: Gemini가 요청을 거절했습니다. 다시 시도해도 해결되지 않는 문제입니다.")
+        print("  - 키 문제라면: bash start-mac.sh reset-key 로 키를 다시 넣으세요.")
+        print("  - 크레딧·지출 한도 문제라면: https://ai.studio/spend 에서 한도와 결제를 확인하세요.")
+        print("  원래 오류:", str(e)[:300])
+        raise SystemExit(1)
