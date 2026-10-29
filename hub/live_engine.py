@@ -430,7 +430,10 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
+    # Per-request lines from the HTTP and Gemini libraries bury the captions on screen.
+    for noisy in ("httpx", "google_genai", "google_genai.models", "websockets"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
