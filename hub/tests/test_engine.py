@@ -163,3 +163,15 @@ def test_mic_meter_warns_only_when_nothing_is_heard(caplog):
         for i in range(1, 120):
             m.feed(silent, i * 0.1)
     assert "들어오지 않습니다" not in caplog.text
+
+
+def test_sentence_buffer_replaces_resent_start_of_sentence():
+    b = SentenceBuffer()
+    assert b.feed("그대로", 0) == []
+    assert b.flush_if_idle(3.0) is None  # too short to flush after a 3 s pause
+    assert b.feed("그대로 있으리라 하시니라.", 3.0) == ["그대로 있으리라 하시니라."]
+
+
+def test_prompt_tells_translator_to_trust_notes_over_misheard_passage():
+    prompt = build_prompt("사도행전 20장 19절에서 23절의 말씀입니다.", [], [], ["en"], "오늘 본문: 요한복음 20:19-23")
+    assert "요한복음 20:19-23" in prompt and "speech-recognition error" in prompt

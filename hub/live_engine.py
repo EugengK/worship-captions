@@ -55,14 +55,22 @@ class SentenceBuffer:
 
     END = re.compile(r"(.+?[.?!。？！])(\s+|$)", re.S)
 
-    def __init__(self, idle_s: float = 1.6, max_chars: int = 140):
+    SHORT = 6  # a piece this short ("그대로") is usually the start of a sentence still coming
+
+    def __init__(self, idle_s: float = 1.6, max_chars: int = 140, short_idle_s: float = 4.0):
         self.idle_s = idle_s
+        self.short_idle_s = short_idle_s
         self.max_chars = max_chars
         self.text = ""
         self.last = 0.0
 
     def feed(self, fragment: str, now: float) -> list:
-        self.text += fragment
+        pending = self.text.strip()
+        if pending and fragment.strip().startswith(pending):
+            # The recogniser re-sent the unfinished sentence in full ("그대로" -> "그대로 있으리라 하시니라.").
+            self.text = fragment.lstrip()
+        else:
+            self.text += fragment
         self.last = now
         out = []
         while True:
@@ -79,7 +87,8 @@ class SentenceBuffer:
         return [s for s in out if s]
 
     def flush_if_idle(self, now: float):
-        if self.text.strip() and now - self.last >= self.idle_s:
+        wait = self.short_idle_s if len(self.text.strip()) < self.SHORT else self.idle_s
+        if self.text.strip() and now - self.last >= wait:
             s, self.text = self.text.strip(), ""
             return s
         return None
@@ -101,7 +110,8 @@ def build_prompt(sentence: str, context: list, glossary: list, langs: list, note
         "Translate the Korean sentence from a live church sermon into captions.",
         "Return JSON with exactly these keys: " + ", ".join(langs) + ".",
         "Each value is a natural, faithful translation of the sentence only, short enough for a projector caption.",
-        "Do not add explanations. Bible quotations should read like a standard Bible translation in that language.",
+        "Do not add explanations. For Bible quotations, translate directly from the Korean in your own words; "
+        "do not reproduce the wording of any published Bible translation.",
         "The Korean comes from live speech recognition and may have recognition errors (odd spacing, misheard names); "
         "translate what the preacher meant.",
     ]
@@ -113,6 +123,8 @@ def build_prompt(sentence: str, context: list, glossary: list, langs: list, note
             lines.append("  " + t["ko"] + " = " + "; ".join(f"{c}: {t[c]}" for c in langs if t.get(c)))
     if notes:
         lines.append("Notes about today's sermon (use them to resolve misheard names and terms): " + notes)
+        lines.append("If the sentence names a Bible book, chapter or person that conflicts with these notes, "
+                     "it is almost certainly a speech-recognition error: translate it as the notes say.")
     if context:
         lines.append("Previous sentences (context only, do not translate):")
         lines.extend("  " + c for c in context)
@@ -134,15 +146,22 @@ class GeminiTranslator:
         self.notes = notes
 
     async def translate(self, sentence: str, context: list) -> dict:
-        resp = await self.client.aio.models.generate_content(
-            model=self.model,
-            contents=build_prompt(sentence, context, self.glossary, self.langs, self.notes),
-            config=self.types.GenerateContentConfig(
-                response_mime_type="application/json", temperature=0.2,
-                thinking_config=self.types.ThinkingConfig(thinking_budget=self.think_budget)),
-        )
-        data = json.loads(resp.text)
-        return {c: str(data.get(c, "")).strip() for c in self.langs}
+        prompt = build_prompt(sentence, context, self.glossary, self.langs, self.notes)
+        problem = ""
+        # Long Bible quotations are sometimes blocked as RECITATION (too close to a copyrighted Bible
+        # translation); a second try with more varied wording usually gets through.
+        for temperature in (0.2, 0.8):
+            config = self.types.GenerateContentConfig(
+                response_mime_type="application/json", temperature=temperature,
+                thinking_config=self.types.ThinkingConfig(thinking_budget=self.think_budget))
+            resp = await self.client.aio.models.generate_content(model=self.model, contents=prompt, config=config)
+            try:
+                data = json.loads(resp.text or "")
+                return {c: str(data.get(c, "")).strip() for c in self.langs}
+            except ValueError:
+                cand = resp.candidates[0] if resp.candidates else None
+                problem = f"empty or invalid reply (finish_reason={getattr(cand, 'finish_reason', None)})"
+        raise RuntimeError(problem)
 
 
 # ---------------------------------------------------------------- audio sources
