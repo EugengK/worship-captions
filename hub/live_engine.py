@@ -320,6 +320,8 @@ class Engine:
                 self._start(rest)
             await self.pending.join()  # finish the last sentences after a file replay
         finally:
+            if getattr(self.hub, "ws", None) is not None:
+                await self.hub.ws.close()
             for t in tasks:
                 t.cancel()
 

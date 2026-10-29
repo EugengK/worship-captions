@@ -5,3 +5,5 @@ experiments/out/
 hub/logs/
 __pycache__/
 .pytest_cache/
+.env
+.venv/

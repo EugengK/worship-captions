@@ -56,6 +56,8 @@ async def handler(ws) -> None:
                 continue
             if msg.get("type") in ("caption", "clear"):
                 await broadcast(json.dumps(msg, ensure_ascii=False), sender=ws)
+    except websockets.ConnectionClosed:
+        pass  # a screen or the engine went away without saying goodbye; not an error
     finally:
         clients.discard(ws)
         log.info("client disconnected (%d total)", len(clients))

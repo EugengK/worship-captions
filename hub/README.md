@@ -1,5 +1,7 @@
 # 자막 허브 + 실시간 번역 엔진
 
+> 가장 쉬운 실행 방법은 저장소 맨 위의 `start-mac.sh`입니다. 안내: `맥에서-시험하기.md`
+
 ```
 핀마이크 → live_engine.py ──(자막)──> caption_hub.py ──> 이음오피스 자막 띠 / web/captions.html / (나중에) 성도 휴대폰
             │  Gemini: 한국어 인식 → 용어집 반영 번역(en, th …)

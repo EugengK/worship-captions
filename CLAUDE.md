@@ -14,4 +14,5 @@
 - 언어: 태국어 최우선(화면 자막), 영어 기준으로 검증. 원고 기반 번역 + 운영자 없는 자동 원고 추적.
 - 화면: 성도 휴대폰 웹페이지(`web/listener.html`). 프로젝터는 **이음오피스(pblsketch/openoffice) 포크의 청중 화면에 자막 띠 통합**이 주안(docs/10). macOS 12+ 필요 → 위의 다른 MacBook 사용. 1단계(이음오피스로 주일 pptx 재생 시험) 실패 시 Keynote + 투명 오버레이(A안)로 복귀.
 - 코드 위치: `ieumoffice/`(이음오피스 자막 띠 패치 + 맥 설치 스크립트, 원본 커밋 고정), `hub/caption_hub.py`(맥에서 도는 자막 허브, ws://localhost:8765, `--demo`), `hub/live_engine.py`(마이크→`gemini-3.5-transcribe-live` 한국어 인식(말끝 감지 민감도 높음)→`gemini-3.5-flash`(생각 모드 끔) 용어집 번역→허브. 3.8 Live는 설교 연속 통역 불가(docs/13), 테스트 `hub/tests`), `web/captions.html`(브라우저용 자막 화면), `web/listener.html`(성도 휴대폰), `experiments/`(Gemini 시험).
+- 맥 실행: `start-mac.sh`(demo | file | live, 첫 실행 시 .venv 설치와 키 입력 → `.env`, 둘 다 gitignore), 안내서 `맥에서-시험하기.md`.
 - API 키는 환경 변수 `GEMINI_API_KEY`, `OPENAI_API_KEY`. 절대 커밋하지 말 것.
