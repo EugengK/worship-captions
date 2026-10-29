@@ -147,16 +147,61 @@ class GeminiTranslator:
 
 # ---------------------------------------------------------------- audio sources
 
+def level(chunk: bytes) -> int:
+    """Loudness of a 16-bit PCM chunk, 0-100 (rough; for the on-screen meter only)."""
+    import numpy as np
+    pcm = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+    if pcm.size == 0:
+        return 0
+    rms = float(np.sqrt(np.mean(pcm * pcm)))
+    return min(100, int(rms / 50))  # ~5000 RMS (loud speech) -> 100
+
+
+class MicMeter:
+    """Prints the mic level every few seconds and warns once if nothing is coming in.
+
+    macOS hands silent audio to apps that were refused microphone access, so silence is the
+    only sign of a missing permission or a wrong input device.
+    """
+
+    def __init__(self, every_s: float = 5.0, silent_after_s: float = 10.0):
+        self.every_s, self.silent_after_s = every_s, silent_after_s
+        self.peak, self.started, self.last_report, self.heard, self.warned = 0, None, 0.0, False, False
+
+    def feed(self, chunk: bytes, now: float) -> None:
+        if self.started is None:
+            self.started = self.last_report = now
+        lv = level(chunk)
+        self.peak = max(self.peak, lv)
+        if lv >= 3:
+            self.heard = True
+        if now - self.last_report >= self.every_s:
+            log.info("마이크 소리 크기: %s %d", "▮" * (self.peak // 10) or "·", self.peak)
+            self.peak, self.last_report = 0, now
+        if not self.heard and not self.warned and now - self.started >= self.silent_after_s:
+            self.warned = True
+            log.warning("마이크에서 소리가 들어오지 않습니다. 확인하세요: "
+                        "① 시스템 설정 > 개인정보 보호 및 보안 > 마이크 에서 '터미널' 켜기 (켠 뒤 터미널을 완전히 종료 후 다시 실행) "
+                        "② 시스템 설정 > 사운드 > 입력 에서 올바른 마이크 선택")
+
+
 async def mic_chunks(queue: asyncio.Queue) -> None:
     import sounddevice as sd  # imported here so --file tests do not need PortAudio
     loop = asyncio.get_running_loop()
+    meter = MicMeter()
 
     def callback(indata, frames, t, status):
-        loop.call_soon_threadsafe(queue.put_nowait, bytes(indata))
+        chunk = bytes(indata)
+        loop.call_soon_threadsafe(queue.put_nowait, chunk)
+        meter.feed(chunk, time.monotonic())
 
     with sd.RawInputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16",
                            blocksize=CHUNK_BYTES // 2, callback=callback):
-        log.info("listening on the default microphone")
+        try:
+            name = sd.query_devices(kind="input")["name"]
+        except Exception:
+            name = "?"
+        log.info("마이크로 듣는 중: %s", name)
         await asyncio.Future()
 
 
@@ -295,6 +340,7 @@ class Engine:
         self.pending = asyncio.Queue()
 
     async def on_text(self, fragment: str) -> None:
+        log.info("인식: %s", fragment.strip())
         for sentence in self.buffer.feed(fragment, time.monotonic()):
             self._start(sentence)
 

@@ -145,3 +145,21 @@ def test_fatal_errors_are_recognised_and_key_is_redacted(monkeypatch):
     assert is_fatal("Your project has exceeded its monthly spending cap.")
     assert not is_fatal("keepalive ping timeout")
     assert redact("bad key SECRET123 rejected") == "bad key *** rejected"
+
+
+def test_mic_meter_warns_only_when_nothing_is_heard(caplog):
+    import logging
+    from live_engine import MicMeter
+    silent, loud = b"\0\0" * 1600, (b"\x10\x27" * 1600)  # 0 and 10000 as int16
+    m = MicMeter(every_s=100, silent_after_s=10)
+    with caplog.at_level(logging.WARNING, logger="live-engine"):
+        for i in range(120):
+            m.feed(silent, i * 0.1)
+    assert "들어오지 않습니다" in caplog.text
+    caplog.clear()
+    m = MicMeter(every_s=100, silent_after_s=10)
+    with caplog.at_level(logging.WARNING, logger="live-engine"):
+        m.feed(loud, 0)
+        for i in range(1, 120):
+            m.feed(silent, i * 0.1)
+    assert "들어오지 않습니다" not in caplog.text
