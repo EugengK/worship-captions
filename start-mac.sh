@@ -80,11 +80,34 @@ sleep 1
 case "$MODE" in
   worship|player-demo)
     # 예배 발표기: player 폴더만 이 맥 안에서(127.0.0.1) 보여 줍니다. .env 등 다른 파일은 열리지 않습니다.
-    .venv/bin/python -m http.server 8080 --bind 127.0.0.1 --directory player >/dev/null 2>&1 &
+    # 8080이 다른 프로그램에 쓰이고 있으면 8081, 8082… 중 빈 자리를 씁니다.
+    PORT="$(.venv/bin/python - <<'PY'
+import socket
+for p in range(8080, 8100):
+    with socket.socket() as s:
+        try:
+            s.bind(("127.0.0.1", p))
+            print(p)
+            break
+        except OSError:
+            pass
+PY
+)"
+    [ -n "$PORT" ] || { echo "발표기용 빈 포트(8080~8099)를 찾지 못했습니다."; exit 1; }
+    WEB_LOG="$(mktemp "${TMPDIR:-/tmp}/worship-web.XXXXXX")"
+    .venv/bin/python -m http.server "$PORT" --bind 127.0.0.1 --directory player >"$WEB_LOG" 2>&1 &
     WEB_PID=$!
     trap 'kill $HUB_PID $WEB_PID 2>/dev/null' EXIT
-    sleep 1
-    URL="http://127.0.0.1:8080/index.html"
+    URL="http://127.0.0.1:$PORT/index.html"
+    for _ in $(seq 1 20); do
+      curl -s -o /dev/null "$URL" && break
+      sleep 0.5
+    done
+    if ! curl -s -o /dev/null "$URL"; then
+      echo "발표기 웹 서버가 시작되지 않았습니다. 아래 내용을 Claude에게 보내 주세요:"
+      cat "$WEB_LOG"
+      exit 1
+    fi
     if command -v open >/dev/null; then
       open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"
     fi
