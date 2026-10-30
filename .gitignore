@@ -7,3 +7,6 @@ __pycache__/
 .pytest_cache/
 .env
 .venv/
+player/node_modules/
+player/.ieum/
+*.pptx

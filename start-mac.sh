@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 맥에서 실시간 번역 자막을 시험하는 시작 스크립트.
 #
+#   bash start-mac.sh worship           # ★ 예배: 예배 발표기 + 마이크 실시간 번역
+#   bash start-mac.sh player-demo       # 예배 발표기 + 데모 자막 (인터넷·API 비용 없음)
 #   bash start-mac.sh demo              # 1단계: 데모 자막만 (인터넷·API 비용 없음)
 #   bash start-mac.sh file 녹음.wav     # 2단계: 녹음 파일로 실제 번역 시험
 #   bash start-mac.sh                   # 3단계: 마이크로 실시간 번역 (영어+태국어)
@@ -42,7 +44,7 @@ if [ ! -x .venv/bin/python ]; then
   .venv/bin/python -m pip install -q -r hub/requirements.txt
 fi
 
-if [ "$MODE" != "demo" ]; then
+if [ "$MODE" != "demo" ] && [ "$MODE" != "player-demo" ]; then
   if [ -f .env ]; then
     set -a; . ./.env; set +a
     if ! key_ok "${GEMINI_API_KEY:-}"; then
@@ -69,18 +71,37 @@ if [ "$MODE" != "demo" ]; then
 fi
 
 HUB_ARGS=()
-[ "$MODE" = "demo" ] && HUB_ARGS+=(--demo)
+case "$MODE" in demo|player-demo) HUB_ARGS+=(--demo) ;; esac
 .venv/bin/python hub/caption_hub.py "${HUB_ARGS[@]+"${HUB_ARGS[@]}"}" &
 HUB_PID=$!
 trap 'kill $HUB_PID 2>/dev/null' EXIT
 sleep 1
 
-# 자막 화면을 기본 브라우저로 엽니다. 프로젝터 쪽으로 옮긴 뒤 Control+Command+F로 전체 화면.
-command -v open >/dev/null && open web/captions.html
+case "$MODE" in
+  worship|player-demo)
+    # 예배 발표기: player 폴더만 이 맥 안에서(127.0.0.1) 보여 줍니다. .env 등 다른 파일은 열리지 않습니다.
+    .venv/bin/python -m http.server 8080 --bind 127.0.0.1 --directory player >/dev/null 2>&1 &
+    WEB_PID=$!
+    trap 'kill $HUB_PID $WEB_PID 2>/dev/null' EXIT
+    sleep 1
+    URL="http://127.0.0.1:8080/index.html"
+    if command -v open >/dev/null; then
+      open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL"
+    fi
+    echo "예배 발표기: $URL"
+    echo "  1) '예배 PPT 열기'로 pptx를 고릅니다."
+    echo "  2) '청중 화면 열기' → 새 창을 프로젝터 화면으로 끌어다 놓고 F 키 (전체 화면)."
+    echo "  3) 노트북 창에서 → / ← 또는 클리커로 넘깁니다. T = 번역 켜기/끄기, B = 화면 가림."
+    ;;
+  *)
+    # 자막 화면을 기본 브라우저로 엽니다. 프로젝터 쪽으로 옮긴 뒤 Control+Command+F로 전체 화면.
+    command -v open >/dev/null && open web/captions.html
+    ;;
+esac
 
 case "$MODE" in
-  demo)
-    echo "데모 자막이 브라우저 아래쪽에 4초마다 나옵니다. 끝내려면 Control + C."
+  demo|player-demo)
+    echo "데모 자막이 4초마다 나옵니다. 끝내려면 Control + C."
     wait "$HUB_PID"
     ;;
   file)
@@ -89,12 +110,12 @@ case "$MODE" in
     .venv/bin/python hub/live_engine.py --file "$2" --langs "$LANGS" --notes "$NOTES"
     echo "녹음 파일 번역이 끝났습니다. 기록: hub/logs/"
     ;;
-  live)
+  live|worship)
     echo "마이크로 듣는 중입니다. 맥의 '시스템 설정 > 사운드 > 입력'에서 핀마이크 수신기를 고르세요."
     echo "처음에는 터미널의 마이크 사용 허용 창이 뜰 수 있습니다 → 허용."
     .venv/bin/python hub/live_engine.py --langs "$LANGS" --notes "$NOTES"
     ;;
   *)
-    echo "알 수 없는 모드: $MODE (demo | file | live)"; exit 1
+    echo "알 수 없는 모드: $MODE (worship | player-demo | demo | file | live)"; exit 1
     ;;
 esac

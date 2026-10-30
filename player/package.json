@@ -1,0 +1,8 @@
+{
+  "name": "worship-player",
+  "private": true,
+  "type": "module",
+  "description": "Worship slideshow with live translated captions (uses IeumOffice's pptx engine, Apache-2.0)",
+  "scripts": { "build": "node build.mjs" },
+  "devDependencies": { "buffer": "6.0.3", "esbuild": "0.25.12" }
+}

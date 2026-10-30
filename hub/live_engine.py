@@ -347,6 +347,34 @@ class HubClient:
                 log.warning("caption hub not reachable (%s): %s", self.url, e)
                 self.ws = None
 
+    async def listen(self, on_control) -> None:
+        """Follows {"type": "control", "translate": bool} from the worship player, reconnecting as needed."""
+        while True:
+            try:
+                async with websockets.connect(self.url) as ws:
+                    async for raw in ws:
+                        try:
+                            msg = json.loads(raw)
+                        except ValueError:
+                            continue
+                        if msg.get("type") == "control" and isinstance(msg.get("translate"), bool):
+                            on_control(msg["translate"], msg.get("slide"))
+            except (OSError, websockets.WebSocketException):
+                pass
+            await asyncio.sleep(3)
+
+
+class GatedQueue(asyncio.Queue):
+    """Audio queue that drops sound while translation is off, so nothing is sent to Google."""
+
+    def __init__(self, is_open):
+        super().__init__()
+        self.is_open = is_open
+
+    def put_nowait(self, item) -> None:
+        if item is None or self.is_open():  # None ends a file replay and always passes
+            super().put_nowait(item)
+
 
 # ---------------------------------------------------------------- engine
 
@@ -357,6 +385,21 @@ class Engine:
         self.context = []
         self.logfile = logfile
         self.pending = asyncio.Queue()
+        self.translating = True  # the worship player switches this per slide; without it, always on
+
+    def set_translating(self, on: bool, slide=None) -> None:
+        if on == self.translating:
+            return
+        self.translating = on
+        where = f" (슬라이드 {slide})" if slide else ""
+        if on:
+            log.info("번역 켜짐%s", where)
+        else:
+            log.info("번역 꺼짐%s: 마이크 소리를 보내지 않습니다", where)
+            rest = self.buffer.text.strip()  # finish the sentence that was being spoken
+            if rest:
+                self.buffer.text = ""
+                self._start(rest)
 
     async def on_text(self, fragment: str) -> None:
         log.info("인식: %s", fragment.strip())
@@ -399,10 +442,12 @@ class Engine:
             self.pending.task_done()
 
     async def run(self, audio_task_factory) -> None:
-        audio = asyncio.Queue()
+        audio = GatedQueue(lambda: self.translating)
         translator = asyncio.create_task(self._translate_loop())
         tasks = [asyncio.create_task(self._idle_flusher()), translator,
                  asyncio.create_task(audio_task_factory(audio))]
+        if hasattr(self.hub, "listen"):
+            tasks.append(asyncio.create_task(self.hub.listen(self.set_translating)))
         try:
             listener = asyncio.create_task(self.transcriber.run(audio, self.on_text))
             await asyncio.wait({listener, translator}, return_when=asyncio.FIRST_COMPLETED)

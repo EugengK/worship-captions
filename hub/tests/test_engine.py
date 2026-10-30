@@ -175,3 +175,61 @@ def test_sentence_buffer_replaces_resent_start_of_sentence():
 def test_prompt_tells_translator_to_trust_notes_over_misheard_passage():
     prompt = build_prompt("사도행전 20장 19절에서 23절의 말씀입니다.", [], [], ["en"], "오늘 본문: 요한복음 20:19-23")
     assert "요한복음 20:19-23" in prompt and "speech-recognition error" in prompt
+
+
+def test_audio_is_dropped_while_translation_is_off():
+    from live_engine import GatedQueue
+    state = {"on": True}
+    q = GatedQueue(lambda: state["on"])
+    q.put_nowait(b"a")
+    state["on"] = False
+    q.put_nowait(b"b")
+    q.put_nowait(None)  # end of a file replay still gets through
+    assert [q.get_nowait() for _ in range(q.qsize())] == [b"a", None]
+
+
+def test_switching_off_finishes_the_sentence_in_progress(tmp_path):
+    async def scenario():
+        engine = Engine(None, StubTranslator(), None, ["en"], None)
+        engine.buffer.feed("마침표 없이 하던 말", 0)
+        engine.set_translating(False, 74)
+        sentence, task = engine.pending.get_nowait()
+        return engine.translating, sentence, (await task)["en"]
+
+    assert asyncio.run(scenario()) == (False, "마침표 없이 하던 말", "EN<마침표 없이 하던 말>")
+
+
+def test_hub_forwards_control_and_replays_it_to_late_clients(hub):
+    async def scenario():
+        async with websockets.connect(hub) as player, websockets.connect(hub) as engine:
+            await player.send(json.dumps({"type": "control", "translate": False, "slide": 3}))
+            first = json.loads(await asyncio.wait_for(engine.recv(), 1.0))
+            await player.send(json.dumps({"type": "control", "translate": False, "slide": 4}))  # no change
+            async with websockets.connect(hub) as late:
+                replay = json.loads(await asyncio.wait_for(late.recv(), 1.0))
+            try:
+                extra = await asyncio.wait_for(engine.recv(), 0.3)
+            except asyncio.TimeoutError:
+                extra = None
+            return first, replay, extra
+
+    first, replay, extra = asyncio.run(scenario())
+    assert first == {"type": "control", "translate": False, "slide": 3}
+    assert replay["translate"] is False and extra is None
+
+
+def test_engine_follows_control_from_hub(hub):
+    async def scenario():
+        engine = Engine(None, StubTranslator(), HubClient(hub), ["en"], None)
+        listener = asyncio.create_task(engine.hub.listen(engine.set_translating))
+        await asyncio.sleep(0.3)
+        async with websockets.connect(hub) as player:
+            await player.send(json.dumps({"type": "control", "translate": False, "slide": 56}))
+            await asyncio.sleep(0.3)
+            off = engine.translating
+            await player.send(json.dumps({"type": "control", "translate": True, "slide": 73}))
+            await asyncio.sleep(0.3)
+        listener.cancel()
+        return off, engine.translating
+
+    assert asyncio.run(scenario()) == (False, True)

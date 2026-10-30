@@ -1,0 +1,92 @@
+/**
+ * Connections of the worship player:
+ *  - the caption hub (ws://localhost:8765): caption lines in, translation on/off out
+ *  - a BroadcastChannel between the presenter window and the audience window
+ */
+
+export interface CaptionLine {
+  lang: string
+  text: string
+}
+
+export type HubMessage =
+  | { type: 'caption'; lines: CaptionLine[] }
+  | { type: 'clear' }
+  | { type: 'control'; translate: boolean; slide?: number }
+
+/** Presenter ⇄ audience messages. */
+export type ShowMessage =
+  | { type: 'hello' }
+  | { type: 'deck' }
+  | { type: 'state'; index: number; translate: boolean; black: boolean }
+  | { type: 'key'; key: string }
+
+export const CHANNEL = 'worship-player'
+export const HUB_URL = (() => {
+  try {
+    return new URLSearchParams(location.search).get('hub') || localStorage.getItem('worshipCaptions.url') || 'ws://localhost:8765'
+  } catch {
+    return 'ws://localhost:8765'
+  }
+})()
+
+/** Keeps a websocket to the hub open, reconnecting every 3 s. */
+export class Hub {
+  private ws: WebSocket | null = null
+  private retry: number | undefined
+  private closed = false
+  private queued: HubMessage | null = null
+
+  constructor(
+    private onMessage: (msg: HubMessage) => void,
+    private onStatus: (connected: boolean) => void = () => {},
+  ) {
+    this.connect()
+  }
+
+  private connect(): void {
+    if (this.closed) return
+    try {
+      this.ws = new WebSocket(HUB_URL)
+    } catch {
+      this.retry = window.setTimeout(() => this.connect(), 3000)
+      return
+    }
+    this.ws.onopen = () => {
+      this.onStatus(true)
+      if (this.queued) this.send(this.queued)
+    }
+    this.ws.onmessage = (ev) => {
+      try {
+        this.onMessage(JSON.parse(String(ev.data)))
+      } catch {
+        /* not JSON: ignore */
+      }
+    }
+    this.ws.onclose = () => {
+      this.ws = null
+      this.onStatus(false)
+      if (!this.closed) this.retry = window.setTimeout(() => this.connect(), 3000)
+    }
+  }
+
+  /** Sends now, or as soon as the hub is reachable (only the latest unsent message is kept). */
+  send(msg: HubMessage): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(msg))
+      this.queued = null
+    } else {
+      this.queued = msg
+    }
+  }
+
+  close(): void {
+    this.closed = true
+    window.clearTimeout(this.retry)
+    this.ws?.close()
+  }
+}
+
+/** Keys a presentation clicker or keyboard uses to move between slides. */
+export const NEXT_KEYS = new Set(['ArrowRight', 'ArrowDown', 'PageDown', ' ', 'Enter', 'n', 'N'])
+export const PREV_KEYS = new Set(['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace', 'p', 'P'])

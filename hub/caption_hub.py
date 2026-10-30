@@ -8,7 +8,11 @@ Usage:
     python3 caption_hub.py --demo     # also plays sample English/Thai captions on a loop
 
 Any client may send {"type": "caption", "lines": [...]} or {"type": "clear"}; the hub forwards
-it to every connected client. The translation engine (Gemini/OpenAI) will be one such client.
+it to every connected client. The translation engine (Gemini/OpenAI) is one such client.
+
+The worship player sends {"type": "control", "translate": true|false, "slide": n} when a slide's
+notes switch translation on or off; the hub forwards it to the engine and remembers the last
+one, so an engine started later still learns the current state.
 """
 
 import argparse
@@ -20,6 +24,7 @@ import websockets
 
 log = logging.getLogger("caption-hub")
 clients = set()
+last_control = None  # latest translate on/off from the worship player
 
 # Sample captions from the first Gemini Live Translate test (docs/06). The Thai lines are
 # machine translations and have not been checked by a Thai speaker.
@@ -46,16 +51,25 @@ async def broadcast(message: str, sender=None) -> None:
 
 
 async def handler(ws) -> None:
+    global last_control
     clients.add(ws)
     log.info("client connected (%d total)", len(clients))
     try:
+        if last_control:
+            await ws.send(last_control)
         async for raw in ws:
             try:
                 msg = json.loads(raw)
             except ValueError:
                 continue
-            if msg.get("type") in ("caption", "clear"):
-                await broadcast(json.dumps(msg, ensure_ascii=False), sender=ws)
+            if msg.get("type") in ("caption", "clear", "control"):
+                out = json.dumps(msg, ensure_ascii=False)
+                if msg["type"] == "control":
+                    if last_control and json.loads(last_control).get("translate") == msg.get("translate"):
+                        continue
+                    last_control = out
+                    log.info("translation %s (slide %s)", "on" if msg.get("translate") else "off", msg.get("slide"))
+                await broadcast(out, sender=ws)
     except websockets.ConnectionClosed:
         pass  # a screen or the engine went away without saying goodbye; not an error
     finally:
