@@ -22,3 +22,20 @@ test('audio that PowerPoint starts by itself', () => {
   const click = auto.replace('afterEffect', 'clickEffect').replace('spid="2"', 'spid="7"')
   assert.deepEqual([...autoplayIds(auto + click)], ['2'])
 })
+
+test('prepared caption file', async () => {
+  const { parseCaptionFile, mismatchedSlides, liveTranslation } = await import('../src/markers.ts')
+  const f = parseCaptionFile(JSON.stringify({
+    title: '2026-11-01',
+    slides: { '38': { ko: '교독문 1 시편 1편', en: 'Blessed is the one\nwho does not walk', th: '' }, x: { en: 'bad' }, '0': { en: 'bad' } },
+  }))
+  assert.equal(f.title, '2026-11-01')
+  assert.deepEqual([...f.slides.keys()], [38])
+  assert.deepEqual(f.slides.get(38), { en: 'Blessed is the one\nwho does not walk' }) // empty th dropped, ko is a check
+  assert.deepEqual(mismatchedSlides(f, () => '교독문 1  시편 1편 복 있는 사람은'), [])
+  assert.deepEqual(mismatchedSlides(f, () => '찬송 300장'), [38])
+  assert.throws(() => parseCaptionFile('{"x":1}'))
+  assert.equal(liveTranslation(true, null, true), false) // prepared captions: no live cost
+  assert.equal(liveTranslation(true, true, true), true) // unless the notes ask for it
+  assert.equal(liveTranslation(false, null, false), false)
+})

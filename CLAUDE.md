@@ -14,6 +14,7 @@
 - 언어: 태국어 최우선(화면 자막), 영어 기준으로 검증. 원고 기반 번역 + 운영자 없는 자동 원고 추적.
 - 화면: 성도 휴대폰 웹페이지(`web/listener.html`). 프로젝터는 **자체 "예배 발표기"(이음오피스 pptx-engine/pptx-render를 떼어 씀) + 자막 띠 내장**이 주 방향(docs/14). 예배 PPT는 **PowerPoint로 제작(.pptx)** → 발표기가 그대로 재생(변환 불필요). 기존에는 그 pptx를 MacBook Air의 Keynote로 발표했음. 발표자 노트의 `[번역 ON]`/`[번역 OFF]`로 번역 자동 켜기/끄기(찬양·찬송·성경 봉독·신앙고백은 끔). 관문: 실제 예배 pptx 재현 품질. 실패 시 Keynote + 덮개 창(A안). `ieumoffice/` 패치는 보조.
 - 코드 위치: `ieumoffice/`(이음오피스 자막 띠 패치 + 맥 설치 스크립트, 원본 커밋 고정), `hub/caption_hub.py`(맥에서 도는 자막 허브, ws://localhost:8765, `--demo`), `hub/live_engine.py`(마이크→`gemini-3.5-transcribe-live` 한국어 인식(말끝 감지 민감도 높음)→`gemini-3.5-flash`(생각 모드 끔) 용어집 번역→허브. 3.8 Live는 설교 연속 통역 불가(docs/13), 테스트 `hub/tests`), `web/captions.html`(브라우저용 자막 화면), `web/listener.html`(성도 휴대폰), `experiments/`(Gemini 시험).
-- 예배 발표기: `player/`(브라우저용, 이음오피스 엔진 번들 `player/dist` 커밋됨, 재빌드 `player/build.sh`). 발표자 창 + 청중 창(BroadcastChannel), 노트 `[번역 ON/OFF]` → 허브 `control` 메시지 → 엔진이 꺼진 동안 소리 안 보냄. 실제 예배 pptx는 커밋 금지(`*.pptx` gitignore).
+- 예배 발표기: `player/`(브라우저용, 이음오피스 엔진 번들 `player/dist` 커밋됨, 재빌드 `player/build.sh`). 발표자 창 + 청중 창(BroadcastChannel), 노트 `[번역 ON/OFF]` → 허브 `control` 메시지 → 엔진이 꺼진 동안 소리 안 보냄. 실제 예배 pptx는 커밋 금지(`*.pptx` gitignore). 자막 언어: 기본 영어 + 중국어·태국어·베트남어 중 최대 3개(발표자 화면에서 고름). **준비된 자막** 파일(.json, 슬라이드 번호→언어별 글)을 예배마다 Claude가 만들어 줌 → 그 슬라이드는 실시간 번역 꺼짐.
+- 번역 결정: 성경 구절 **NIV**(공식 본문에서 가져올 것, 기억으로 쓰지 말 것). 사도신경 영어는 목사님이 직접 만듦(자막 띠 X). 교독문은 슬라이드마다 영어를 자막 띠에. 설교·광고는 원고 미리 번역 + 실시간(원고 따라가기는 아직 미구현).
 - 맥 실행: `start-mac.sh`(worship | player-demo | demo | file | live, 첫 실행 시 .venv 설치와 키 입력 → `.env`, 둘 다 gitignore), 안내서 `맥에서-시험하기.md`.
 - API 키는 환경 변수 `GEMINI_API_KEY`, `OPENAI_API_KEY`. 절대 커밋하지 말 것.

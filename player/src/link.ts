@@ -18,7 +18,16 @@ export type HubMessage =
 export type ShowMessage =
   | { type: 'hello' }
   | { type: 'deck' }
-  | { type: 'state'; index: number; translate: boolean; black: boolean; langs: string[] }
+  | {
+      type: 'state'
+      index: number
+      /** Live translation on this slide */
+      translate: boolean
+      black: boolean
+      langs: string[]
+      /** Prepared captions for this slide (language → text), shown instead of live ones */
+      fixed: Record<string, string> | null
+    }
   | { type: 'key'; key: string }
 
 export const CHANNEL = 'worship-player'

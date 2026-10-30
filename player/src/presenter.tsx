@@ -7,6 +7,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { SlideThumb } from 'ieum-slides/SlideThumb'
 import { imageUrls, loadDeck, preloadImages, type PlayerDeck } from './deck'
+import { liveTranslation, mismatchedSlides, parseCaptionFile, type CaptionFile } from './markers'
 import { CHANNEL, Hub, LANGUAGES, MAX_LANGS, NEXT_KEYS, PREV_KEYS, toggleLang, type CaptionLine, type ShowMessage } from './link'
 import './player.css'
 
@@ -37,7 +38,10 @@ function Presenter() {
   const [images, setImages] = useState(new Map<string, HTMLImageElement>())
   const [progress, setProgress] = useState('')
   const [index, setIndex] = useState(0)
+  // Carried on/off state (notes markers, T key); `live` below is what actually applies on this slide
   const [translate, setTranslate] = useState(false)
+  const [captions, setCaptions] = useState<CaptionFile | null>(null)
+  const [captionWarn, setCaptionWarn] = useState('')
   const [langs, setLangs] = useState<string[]>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('worshipPlayer.langs') || '[]')
@@ -62,11 +66,34 @@ function Presenter() {
     [],
   )
 
+  const loadCaptions = useCallback(async (file: File, d: PlayerDeck | null) => {
+    try {
+      const c = parseCaptionFile(await file.text())
+      setCaptions(c)
+      const bad = d ? mismatchedSlides(c, (no) => d.slides[no - 1]?.title) : []
+      setCaptionWarn(
+        bad.length
+          ? `자막 파일과 슬라이드 내용이 다른 곳: ${bad.join(', ')}번 (PPT가 바뀌었으면 자막 파일을 새로 받아야 합니다)`
+          : '',
+      )
+    } catch (e) {
+      setCaptions(null)
+      setCaptionWarn(`자막 파일을 읽지 못했습니다: ${(e as Error).message}`)
+    }
+  }, [])
+
+  /** Takes the .pptx and, optionally, its prepared-captions .json (picked or dropped together). */
   const open = useCallback(
-    async (file: File) => {
+    async (files: File[]) => {
+      const pptx = files.find((f) => /\.pptx$/i.test(f.name))
+      const json = files.find((f) => /\.json$/i.test(f.name))
+      if (!pptx) {
+        if (json) await loadCaptions(json, deck)
+        return
+      }
       setProgress('여는 중…')
       try {
-        const d = await loadDeck(file, setProgress)
+        const d = await loadDeck(pptx, setProgress)
         setProgress('그림 준비 중…')
         setImages(await preloadImages(document, imageUrls(d.slides)))
         window.worshipPlayer = { deck: d }
@@ -74,13 +101,15 @@ function Presenter() {
         setIndex(0)
         setTranslate(d.slides[0]?.translate ?? false)
         setProgress('')
+        if (json) await loadCaptions(json, d)
+        else if (captions) setCaptionWarn(mismatchedSlides(captions, (no) => d.slides[no - 1]?.title).length ? '자막 파일이 이 PPT와 맞지 않을 수 있습니다' : '')
         channel.postMessage({ type: 'deck' } satisfies ShowMessage)
       } catch (e) {
         console.error(e)
         setProgress(`열지 못했습니다: ${(e as Error).message}`)
       }
     },
-    [channel],
+    [channel, deck, captions, loadCaptions],
   )
 
   const go = useCallback(
@@ -110,6 +139,10 @@ function Presenter() {
     [go, index, deck],
   )
 
+  const fixed = captions?.slides.get(index + 1) ?? null
+  const live = deck ? liveTranslation(translate, deck.slides[index]!.marker, !!fixed) : false
+  const show: ShowMessage = { type: 'state', index, translate: live, black, langs, fixed }
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement).tagName === 'INPUT') return
@@ -119,23 +152,24 @@ function Presenter() {
     window.addEventListener('keydown', onKey)
     channel.onmessage = (ev: MessageEvent<ShowMessage>) => {
       if (ev.data.type === 'key') handleKey(ev.data.key)
-      else if (ev.data.type === 'hello') channel.postMessage({ type: 'state', index, translate, black, langs } satisfies ShowMessage)
+      else if (ev.data.type === 'hello') channel.postMessage(show)
     }
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleKey, channel, index, translate, black, langs])
+  }, [handleKey, channel, show])
 
   // Projector follows the presenter
   useEffect(() => {
-    channel.postMessage({ type: 'state', index, translate, black, langs } satisfies ShowMessage)
-  }, [channel, index, translate, black, langs])
+    channel.postMessage(show)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channel, index, live, black, langs, fixed])
 
   // Translation engine follows the slide (it stops sending sound to Google while off).
   // Sent when the state changes and again whenever the hub (re)connects.
   const slideNo = useRef(1)
   slideNo.current = index + 1
   useEffect(() => {
-    if (deck && hubUp) hub.send({ type: 'control', translate, langs, slide: slideNo.current })
-  }, [hub, deck, translate, langs, hubUp])
+    if (deck && hubUp) hub.send({ type: 'control', translate: live, langs, slide: slideNo.current })
+  }, [hub, deck, live, langs, hubUp])
 
   useEffect(() => {
     try {
@@ -220,17 +254,17 @@ function Presenter() {
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => {
           e.preventDefault()
-          const f = e.dataTransfer.files[0]
-          if (f) void open(f)
+          void open([...e.dataTransfer.files])
         }}
       >
         <h1>예배 발표기</h1>
         <p>호바트한인교회 · 실시간 번역 자막</p>
         <label className="big-button">
           예배 PPT 열기 (.pptx)
-          <input type="file" accept=".pptx" hidden onChange={(e) => e.target.files?.[0] && void open(e.target.files[0])} />
+          <input type="file" accept=".pptx,.json" multiple hidden onChange={(e) => void open([...(e.target.files ?? [])])} />
         </label>
         <p className="hint">또는 pptx 파일을 이 창에 끌어다 놓으세요.</p>
+        <p className="hint">미리 번역한 자막 파일(.json)이 있으면 pptx와 함께 고르거나 함께 끌어다 놓으세요.</p>
         {progress && <p className="progress">{progress}</p>}
       </div>
     )
@@ -261,14 +295,24 @@ function Presenter() {
             )
           })}
         </span>
-        <button className={translate ? 'pill on' : 'pill off'} onClick={() => setTranslate((t) => !t)} title="T 키">
-          {translate ? '번역 켜짐' : '번역 꺼짐'}
-        </button>
+        {fixed ? (
+          <span className="pill ready" title="자막 파일의 번역을 띄우는 중 (실시간 번역 꺼짐, 비용 없음)">
+            준비된 자막
+          </span>
+        ) : (
+          <button className={live ? 'pill on' : 'pill off'} onClick={() => setTranslate((t) => !t)} title="T 키">
+            {live ? '번역 켜짐' : '번역 꺼짐'}
+          </button>
+        )}
+        <label className="caption-file" title="미리 번역한 자막 파일(.json)">
+          {captions ? `자막 파일: ${captions.title || captions.slides.size + '장'}` : '자막 파일 열기'}
+          <input type="file" accept=".json" hidden onChange={(e) => e.target.files?.[0] && void loadCaptions(e.target.files[0], deck)} />
+        </label>
         <span className={hubUp ? 'dot up' : 'dot down'} title="자막 서버 (caption_hub.py)">
           {hubUp ? '자막 서버 연결됨' : '자막 서버 없음'}
         </span>
         {black && <span className="pill black">화면 가림 (B)</span>}
-        {progress && <span className="warn">{progress}</span>}
+        {(progress || captionWarn) && <span className="warn">{progress || captionWarn}</span>}
         <span className="count">
           {index + 1} / {deck.slides.length}
         </span>
@@ -292,9 +336,13 @@ function Presenter() {
           ))}
           <div className="label">노트</div>
           <div className="notes">{slide.notes || '(노트 없음)'}</div>
-          <div className="label">최근 자막</div>
+          <div className="label">{fixed ? '준비된 자막 (이 슬라이드)' : '최근 자막'}</div>
           <div className="last-caption">
-            {lastCaption.length ? lastCaption.map((l, i) => <div key={i}>{l.text}</div>) : '(아직 없음)'}
+            {fixed
+              ? langs.filter((c) => fixed[c]).map((c) => <div key={c}>{fixed[c]}</div>)
+              : lastCaption.length
+                ? lastCaption.map((l, i) => <div key={i}>{l.text}</div>)
+                : '(아직 없음)'}
           </div>
           <div className="keys">→ / ← 넘기기 · T 번역 켜기/끄기 · B 화면 가림 · Home/End 처음/끝</div>
         </aside>
@@ -304,14 +352,17 @@ function Presenter() {
           <button
             key={i}
             data-i={i}
-            className={(i === index ? 'thumb current ' : 'thumb ') + (s.translate ? 'tr-on' : 'tr-off')}
+            className={
+              (i === index ? 'thumb current ' : 'thumb ') +
+              (captions?.slides.has(s.no) ? 'tr-fixed' : liveTranslation(s.translate, s.marker, false) ? 'tr-on' : 'tr-off')
+            }
             onClick={() => go(i)}
             title={s.title}
           >
             <SlideThumb slide={s.render} images={images} width={144} />
             <span>
               {s.no}
-              {s.marker === true ? ' · 번역 ON' : s.marker === false ? ' · 번역 OFF' : ''}
+              {captions?.slides.has(s.no) ? ' · 자막' : s.marker === true ? ' · 번역 ON' : s.marker === false ? ' · 번역 OFF' : ''}
             </span>
           </button>
         ))}

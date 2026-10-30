@@ -4,6 +4,8 @@
  * Shows the latest lines from the caption hub and hides itself after 8 s without new ones.
  * While translation is off (hymns, creed, Bible reading) it stays hidden, except for the
  * last sentence or two still arriving in the first seconds after it was switched off.
+ * A slide with prepared captions (responsive reading, Bible verses…) shows those for as long as
+ * the slide is up, in place of live ones.
  */
 import React, { useEffect, useRef, useState } from 'react'
 import { Hub, type CaptionLine } from './link'
@@ -11,7 +13,15 @@ import { Hub, type CaptionLine } from './link'
 const HIDE_AFTER_MS = 8000
 const GRACE_AFTER_OFF_MS = 6000
 
-export function CaptionBand({ translate, langs }: { translate: boolean; langs: string[] }): React.ReactElement | null {
+export function CaptionBand({
+  translate,
+  langs,
+  fixed,
+}: {
+  translate: boolean
+  langs: string[]
+  fixed: Record<string, string> | null
+}): React.ReactElement | null {
   const [lines, setLines] = useState<CaptionLine[]>([])
   const [visible, setVisible] = useState(false)
   const hideTimer = useRef<number | undefined>(undefined)
@@ -50,10 +60,15 @@ export function CaptionBand({ translate, langs }: { translate: boolean; langs: s
   }, [])
 
   // Only the languages picked on the presenter screen, in that order
-  const shown = langs.map((c) => lines.find((l) => l.lang === c)).filter((l): l is CaptionLine => !!l)
+  const source = fixed ? langs.filter((c) => fixed[c]).map((c) => ({ lang: c, text: fixed[c]! })) : lines
+  const shown = langs.map((c) => source.find((l) => l.lang === c)).filter((l): l is CaptionLine => !!l)
   if (!shown.length) return null
   return (
-    <div className={`caption-band n${shown.length}`} aria-live="polite" style={{ opacity: visible ? 1 : 0 }}>
+    <div
+      className={`caption-band n${shown.length}${fixed ? ' fixed' : ''}`}
+      aria-live="polite"
+      style={{ opacity: fixed || visible ? 1 : 0 }}
+    >
       {shown.map((l, i) => (
         <div key={i} lang={l.lang} className={i === 0 ? 'caption-first' : 'caption-second'}>
           {l.text}

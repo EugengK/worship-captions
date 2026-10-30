@@ -31,7 +31,9 @@ function useWindowSize() {
 function Audience() {
   const [deck, setDeck] = useState<PlayerDeck | null>(null)
   const [images, setImages] = useState(new Map<string, HTMLImageElement>())
-  const [state, setState] = useState({ index: 0, translate: false, black: false, langs: ['en'] })
+  const [state, setState] = useState<Omit<Extract<ShowMessage, { type: 'state' }>, 'type'>>({
+    index: 0, translate: false, black: false, langs: ['en'], fixed: null,
+  })
   const [fullscreen, setFullscreen] = useState(false)
   const { w, h } = useWindowSize()
   const channel = useMemo(() => new BroadcastChannel(CHANNEL), [])
@@ -47,7 +49,7 @@ function Audience() {
     channel.onmessage = (ev: MessageEvent<ShowMessage>) => {
       const m = ev.data
       if (m.type === 'deck') void load()
-      else if (m.type === 'state') setState({ index: m.index, translate: m.translate, black: m.black, langs: m.langs })
+      else if (m.type === 'state') setState(m)
     }
     void load()
     channel.postMessage({ type: 'hello' } satisfies ShowMessage)
@@ -92,7 +94,7 @@ function Audience() {
       <div className="audience-slide" style={{ width, visibility: state.black ? 'hidden' : 'visible' }}>
         <SlideThumb slide={render} images={images} width={width} />
       </div>
-      <CaptionBand translate={state.translate} langs={state.langs} />
+      <CaptionBand translate={state.translate} langs={state.langs} fixed={state.fixed} />
     </div>
   )
 }
