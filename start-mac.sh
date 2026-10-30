@@ -37,6 +37,18 @@ if ! command -v python3 >/dev/null; then
   exit 1
 fi
 
+# 번역 엔진 부품(google-genai 등)이 Python 3.11 이상을 요구합니다. 오래된 맥(Big Sur 등)의 기본 python3는 3.8~3.9입니다.
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+  echo "Python 3.11 이상이 필요합니다 (지금: $(python3 --version 2>&1))."
+  echo "https://www.python.org/downloads/macos/ 에서 macOS용 Python 3.12 설치 파일을 받아 설치한 뒤,"
+  echo "터미널을 새로 열고 다시 실행하세요."
+  exit 1
+fi
+if [ -x .venv/bin/python ] && ! .venv/bin/python -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+  echo "예전 Python으로 만든 설치를 지우고 새로 설치합니다."
+  rm -rf .venv
+fi
+
 if [ ! -x .venv/bin/python ]; then
   echo "처음 실행: 필요한 프로그램을 설치합니다 (1~3분)…"
   python3 -m venv .venv
