@@ -5,7 +5,7 @@
 #   bash start-mac.sh player-demo       # 예배 발표기 + 데모 자막 (인터넷·API 비용 없음)
 #   bash start-mac.sh demo              # 1단계: 데모 자막만 (인터넷·API 비용 없음)
 #   bash start-mac.sh file 녹음.wav     # 2단계: 녹음 파일로 실제 번역 시험
-#   bash start-mac.sh                   # 3단계: 마이크로 실시간 번역 (영어+태국어)
+#   bash start-mac.sh                   # 3단계: 마이크로 실시간 번역 (영어)
 #   LANGS=en,th,zh bash start-mac.sh    # 자막 언어 바꾸기
 #   NOTES="창세기 12:1-9. 이 본문에서는 아브람(Abram)" bash start-mac.sh   # 오늘 본문 메모
 #   bash start-mac.sh reset-key         # 저장된 API 키를 지우고 다시 입력
@@ -29,7 +29,7 @@ key_ok() {
   [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
         -H "x-goog-api-key: $1" 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1')" = "200" ]
 }
-LANGS="${LANGS:-en,th}"
+LANGS="${LANGS:-en}"
 NOTES="${NOTES:-}"
 
 if ! command -v python3 >/dev/null; then

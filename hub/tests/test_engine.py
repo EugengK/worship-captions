@@ -214,14 +214,14 @@ def test_hub_forwards_control_and_replays_it_to_late_clients(hub):
             return first, replay, extra
 
     first, replay, extra = asyncio.run(scenario())
-    assert first == {"type": "control", "translate": False, "slide": 3}
+    assert first["translate"] is False and first["slide"] == 3
     assert replay["translate"] is False and extra is None
 
 
 def test_engine_follows_control_from_hub(hub):
     async def scenario():
         engine = Engine(None, StubTranslator(), HubClient(hub), ["en"], None)
-        listener = asyncio.create_task(engine.hub.listen(engine.set_translating))
+        listener = asyncio.create_task(engine.hub.listen(engine.on_control))
         await asyncio.sleep(0.3)
         async with websockets.connect(hub) as player:
             await player.send(json.dumps({"type": "control", "translate": False, "slide": 56}))
@@ -233,3 +233,21 @@ def test_engine_follows_control_from_hub(hub):
         return off, engine.translating
 
     assert asyncio.run(scenario()) == (False, True)
+
+
+def test_presenter_language_choice_reaches_translator(hub):
+    class Langs(StubTranslator):
+        langs = ["en"]
+
+    async def scenario():
+        engine = Engine(None, Langs(), HubClient(hub), ["en"], None)
+        listener = asyncio.create_task(engine.hub.listen(engine.on_control))
+        await asyncio.sleep(0.3)
+        async with websockets.connect(hub) as player:
+            await player.send(json.dumps({"type": "control", "langs": ["en", "th", "ko", "xx", "zh", "vi"]}))
+            await asyncio.sleep(0.3)
+        listener.cancel()
+        return engine.langs, engine.translator.langs, engine.translating
+
+    # Korean and unknown codes are dropped, at most three lines; on/off is untouched
+    assert asyncio.run(scenario()) == (["en", "th", "zh"], ["en", "th", "zh"], True)

@@ -31,7 +31,8 @@ function useWindowSize() {
 function Audience() {
   const [deck, setDeck] = useState<PlayerDeck | null>(null)
   const [images, setImages] = useState(new Map<string, HTMLImageElement>())
-  const [state, setState] = useState({ index: 0, translate: false, black: false })
+  const [state, setState] = useState({ index: 0, translate: false, black: false, langs: ['en'] })
+  const [fullscreen, setFullscreen] = useState(false)
   const { w, h } = useWindowSize()
   const channel = useMemo(() => new BroadcastChannel(CHANNEL), [])
 
@@ -46,7 +47,7 @@ function Audience() {
     channel.onmessage = (ev: MessageEvent<ShowMessage>) => {
       const m = ev.data
       if (m.type === 'deck') void load()
-      else if (m.type === 'state') setState({ index: m.index, translate: m.translate, black: m.black })
+      else if (m.type === 'state') setState({ index: m.index, translate: m.translate, black: m.black, langs: m.langs })
     }
     void load()
     channel.postMessage({ type: 'hello' } satisfies ShowMessage)
@@ -60,27 +61,38 @@ function Audience() {
       channel.postMessage({ type: 'key', key: e.key } satisfies ShowMessage)
     }
     window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    // A fullscreen popup (Chrome) fills the screen without document fullscreen; count it too
+    const onResize = () =>
+      setFullscreen(!!document.fullscreenElement || (window.innerWidth >= screen.width && window.innerHeight >= screen.height))
+    onResize()
+    window.addEventListener('resize', onResize)
+    document.addEventListener('fullscreenchange', onResize)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', onResize)
+      document.removeEventListener('fullscreenchange', onResize)
+    }
   }, [channel])
 
   const slide = deck?.slides[state.index]
   const render = useMemo(() => (slide ? withoutAudioIcons(slide.render) : null), [slide])
   if (!deck || !render) {
     return (
-      <div className="audience-wait">
+      <div className="audience-wait" onClick={() => !document.fullscreenElement && void document.documentElement.requestFullscreen?.()}>
         청중 화면입니다. 노트북의 발표자 화면에서 예배 PPT를 열어 주세요.
-        <br />이 창을 프로젝터 화면으로 옮긴 뒤 F 키를 누르면 전체 화면이 됩니다.
+        <br />이 창이 프로젝터 화면에 있으면 한 번 눌러 전체 화면으로 만드세요 (F 키도 가능).
       </div>
     )
   }
   // As large as fits; on a 16:10 projector the spare space stays below the slide for captions
   const width = Math.min(w, (h * render.widthPx) / render.heightPx)
   return (
-    <div className="audience" onDoubleClick={() => void document.documentElement.requestFullscreen?.()}>
+    <div className="audience" onClick={() => !document.fullscreenElement && void document.documentElement.requestFullscreen?.()}>
+      {!fullscreen && <div className="fs-hint">화면을 한 번 누르면 전체 화면이 됩니다 (F 키도 가능)</div>}
       <div className="audience-slide" style={{ width, visibility: state.black ? 'hidden' : 'visible' }}>
         <SlideThumb slide={render} images={images} width={width} />
       </div>
-      <CaptionBand translate={state.translate} />
+      <CaptionBand translate={state.translate} langs={state.langs} />
     </div>
   )
 }

@@ -7,7 +7,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { SlideThumb } from 'ieum-slides/SlideThumb'
 import { imageUrls, loadDeck, preloadImages, type PlayerDeck } from './deck'
-import { CHANNEL, Hub, NEXT_KEYS, PREV_KEYS, type CaptionLine, type ShowMessage } from './link'
+import { CHANNEL, Hub, LANGUAGES, MAX_LANGS, NEXT_KEYS, PREV_KEYS, toggleLang, type CaptionLine, type ShowMessage } from './link'
 import './player.css'
 
 declare global {
@@ -38,6 +38,14 @@ function Presenter() {
   const [progress, setProgress] = useState('')
   const [index, setIndex] = useState(0)
   const [translate, setTranslate] = useState(false)
+  const [langs, setLangs] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('worshipPlayer.langs') || '[]')
+      return Array.isArray(saved) && saved[0] === 'en' ? saved.slice(0, MAX_LANGS) : ['en']
+    } catch {
+      return ['en']
+    }
+  })
   const [black, setBlack] = useState(false)
   const [hubUp, setHubUp] = useState(false)
   const [lastCaption, setLastCaption] = useState<CaptionLine[]>([])
@@ -111,23 +119,31 @@ function Presenter() {
     window.addEventListener('keydown', onKey)
     channel.onmessage = (ev: MessageEvent<ShowMessage>) => {
       if (ev.data.type === 'key') handleKey(ev.data.key)
-      else if (ev.data.type === 'hello') channel.postMessage({ type: 'state', index, translate, black } satisfies ShowMessage)
+      else if (ev.data.type === 'hello') channel.postMessage({ type: 'state', index, translate, black, langs } satisfies ShowMessage)
     }
     return () => window.removeEventListener('keydown', onKey)
-  }, [handleKey, channel, index, translate, black])
+  }, [handleKey, channel, index, translate, black, langs])
 
   // Projector follows the presenter
   useEffect(() => {
-    channel.postMessage({ type: 'state', index, translate, black } satisfies ShowMessage)
-  }, [channel, index, translate, black])
+    channel.postMessage({ type: 'state', index, translate, black, langs } satisfies ShowMessage)
+  }, [channel, index, translate, black, langs])
 
   // Translation engine follows the slide (it stops sending sound to Google while off).
   // Sent when the state changes and again whenever the hub (re)connects.
   const slideNo = useRef(1)
   slideNo.current = index + 1
   useEffect(() => {
-    if (deck && hubUp) hub.send({ type: 'control', translate, slide: slideNo.current })
-  }, [hub, deck, translate, hubUp])
+    if (deck && hubUp) hub.send({ type: 'control', translate, langs, slide: slideNo.current })
+  }, [hub, deck, translate, langs, hubUp])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('worshipPlayer.langs', JSON.stringify(langs))
+    } catch {
+      /* private mode: the choice is just not remembered */
+    }
+  }, [langs])
 
   // Audio: stop on leaving a slide, start clips PowerPoint would start by itself
   useEffect(() => {
@@ -160,12 +176,34 @@ function Presenter() {
     }
   }
 
-  const openAudience = () => {
+  // Opens the projector window. In Chrome, with the "window management" permission (asked once),
+  // it lands on the other screen at full size and asks for fullscreen; anywhere else the window
+  // opens normally and one click inside it makes it fullscreen.
+  const openAudience = async () => {
     if (audience.current && !audience.current.closed) {
       audience.current.focus()
       return
     }
-    audience.current = window.open('audience.html' + location.search, 'worship-audience', 'popup,width=960,height=600')
+    let features = 'popup,width=960,height=600'
+    try {
+      const getScreens = (window as any).getScreenDetails as (() => Promise<any>) | undefined
+      if (getScreens) {
+        const d = await getScreens()
+        const other = d.screens.find((s: any) => s !== d.currentScreen)
+        if (other) {
+          features = `popup,fullscreen,left=${other.availLeft},top=${other.availTop},width=${other.availWidth},height=${other.availHeight}`
+        }
+      }
+    } catch {
+      /* permission refused or not supported: normal window */
+    }
+    const w = window.open('audience.html' + location.search, 'worship-audience', features)
+    if (!w) {
+      setProgress('청중 화면이 차단되었습니다. 주소창 오른쪽의 팝업 차단 표시에서 "항상 허용"을 고른 뒤 다시 누르세요.')
+      return
+    }
+    setProgress('')
+    audience.current = w
   }
 
   const [mainRef, mainBox] = useBox()
@@ -206,7 +244,23 @@ function Presenter() {
       <header>
         <strong>예배 발표기</strong>
         <span className="file">{deck.name}</span>
-        <button onClick={openAudience}>청중 화면 열기</button>
+        <button onClick={() => void openAudience()}>청중 화면 열기</button>
+        <span className="langs" title={`자막 언어 (최대 ${MAX_LANGS}개, 영어는 기본)`}>
+          {LANGUAGES.map((l) => {
+            const on = langs.includes(l.code)
+            const full = !on && langs.length >= MAX_LANGS
+            return (
+              <button
+                key={l.code}
+                className={on ? 'lang on' : 'lang'}
+                disabled={l.code === 'en' || full}
+                onClick={() => setLangs((cur) => toggleLang(cur, l.code))}
+              >
+                {l.label}
+              </button>
+            )
+          })}
+        </span>
         <button className={translate ? 'pill on' : 'pill off'} onClick={() => setTranslate((t) => !t)} title="T 키">
           {translate ? '번역 켜짐' : '번역 꺼짐'}
         </button>
@@ -214,6 +268,7 @@ function Presenter() {
           {hubUp ? '자막 서버 연결됨' : '자막 서버 없음'}
         </span>
         {black && <span className="pill black">화면 가림 (B)</span>}
+        {progress && <span className="warn">{progress}</span>}
         <span className="count">
           {index + 1} / {deck.slides.length}
         </span>

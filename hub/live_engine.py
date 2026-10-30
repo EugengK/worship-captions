@@ -33,6 +33,7 @@ log = logging.getLogger("live-engine")
 
 HERE = Path(__file__).resolve().parent
 LANG_NAMES = {"en": "English", "th": "Thai", "zh": "Simplified Chinese", "vi": "Vietnamese", "ko": "Korean"}
+MAX_LANGS = 3  # caption lines the projector band shows at once
 
 # Transcription-only Live model: Korean text, no audio output to pay for (docs/13). The
 # live-translate model also works (it returns the Korean input transcription too) but
@@ -348,7 +349,7 @@ class HubClient:
                 self.ws = None
 
     async def listen(self, on_control) -> None:
-        """Follows {"type": "control", "translate": bool} from the worship player, reconnecting as needed."""
+        """Follows {"type": "control", "translate": bool, "langs": [...]} from the worship player, reconnecting."""
         while True:
             try:
                 async with websockets.connect(self.url) as ws:
@@ -357,8 +358,8 @@ class HubClient:
                             msg = json.loads(raw)
                         except ValueError:
                             continue
-                        if msg.get("type") == "control" and isinstance(msg.get("translate"), bool):
-                            on_control(msg["translate"], msg.get("slide"))
+                        if msg.get("type") == "control":
+                            on_control(msg)
             except (OSError, websockets.WebSocketException):
                 pass
             await asyncio.sleep(3)
@@ -386,6 +387,23 @@ class Engine:
         self.logfile = logfile
         self.pending = asyncio.Queue()
         self.translating = True  # the worship player switches this per slide; without it, always on
+
+    def on_control(self, msg: dict) -> None:
+        """Applies a control message from the worship player: languages first, then on/off."""
+        if isinstance(msg.get("langs"), list):
+            self.set_langs(msg["langs"])
+        if isinstance(msg.get("translate"), bool):
+            self.set_translating(msg["translate"], msg.get("slide"))
+
+    def set_langs(self, langs: list) -> None:
+        """Caption languages chosen on the presenter screen (at most 3, Korean excluded)."""
+        wanted = [c for c in dict.fromkeys(langs) if c in LANG_NAMES and c != "ko"][:MAX_LANGS]
+        if not wanted or wanted == self.langs:
+            return
+        self.langs = wanted
+        if hasattr(self.translator, "langs"):
+            self.translator.langs = wanted
+        log.info("자막 언어: %s", ", ".join(LANG_NAMES[c] for c in wanted))
 
     def set_translating(self, on: bool, slide=None) -> None:
         if on == self.translating:
@@ -447,7 +465,7 @@ class Engine:
         tasks = [asyncio.create_task(self._idle_flusher()), translator,
                  asyncio.create_task(audio_task_factory(audio))]
         if hasattr(self.hub, "listen"):
-            tasks.append(asyncio.create_task(self.hub.listen(self.set_translating)))
+            tasks.append(asyncio.create_task(self.hub.listen(self.on_control)))
         try:
             listener = asyncio.create_task(self.transcriber.run(audio, self.on_text))
             await asyncio.wait({listener, translator}, return_when=asyncio.FIRST_COMPLETED)
@@ -469,7 +487,7 @@ class Engine:
 
 async def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--langs", default="en,th", help="caption languages, in display order (default en,th)")
+    p.add_argument("--langs", default="en", help="caption languages, in display order (default en; the worship player can change them)")
     p.add_argument("--file", help="replay this WAV instead of using the microphone")
     p.add_argument("--hub", default="ws://localhost:8765")
     p.add_argument("--glossary", default=str(HERE / "glossary.json"))

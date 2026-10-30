@@ -11,7 +11,7 @@ import { Hub, type CaptionLine } from './link'
 const HIDE_AFTER_MS = 8000
 const GRACE_AFTER_OFF_MS = 6000
 
-export function CaptionBand({ translate }: { translate: boolean }): React.ReactElement | null {
+export function CaptionBand({ translate, langs }: { translate: boolean; langs: string[] }): React.ReactElement | null {
   const [lines, setLines] = useState<CaptionLine[]>([])
   const [visible, setVisible] = useState(false)
   const hideTimer = useRef<number | undefined>(undefined)
@@ -49,10 +49,12 @@ export function CaptionBand({ translate }: { translate: boolean }): React.ReactE
     }
   }, [])
 
-  if (!lines.length) return null
+  // Only the languages picked on the presenter screen, in that order
+  const shown = langs.map((c) => lines.find((l) => l.lang === c)).filter((l): l is CaptionLine => !!l)
+  if (!shown.length) return null
   return (
-    <div className="caption-band" aria-live="polite" style={{ opacity: visible ? 1 : 0 }}>
-      {lines.map((l, i) => (
+    <div className={`caption-band n${shown.length}`} aria-live="polite" style={{ opacity: visible ? 1 : 0 }}>
+      {shown.map((l, i) => (
         <div key={i} lang={l.lang} className={i === 0 ? 'caption-first' : 'caption-second'}>
           {l.text}
         </div>

@@ -12,16 +12,34 @@ export interface CaptionLine {
 export type HubMessage =
   | { type: 'caption'; lines: CaptionLine[] }
   | { type: 'clear' }
-  | { type: 'control'; translate: boolean; slide?: number }
+  | { type: 'control'; translate?: boolean; langs?: string[]; slide?: number }
 
 /** Presenter ⇄ audience messages. */
 export type ShowMessage =
   | { type: 'hello' }
   | { type: 'deck' }
-  | { type: 'state'; index: number; translate: boolean; black: boolean }
+  | { type: 'state'; index: number; translate: boolean; black: boolean; langs: string[] }
   | { type: 'key'; key: string }
 
 export const CHANNEL = 'worship-player'
+
+/** Caption languages the presenter can pick. English is always on; at most MAX_LANGS lines. */
+export const LANGUAGES = [
+  { code: 'en', label: 'English' },
+  { code: 'zh', label: '中文' },
+  { code: 'th', label: 'ไทย' },
+  { code: 'vi', label: 'Tiếng Việt' },
+]
+export const MAX_LANGS = 3
+
+/** Adds or removes a language, keeping English and the order of LANGUAGES. */
+export function toggleLang(langs: string[], code: string): string[] {
+  if (code === 'en') return langs
+  const on = langs.includes(code)
+  if (!on && langs.length >= MAX_LANGS) return langs
+  const next = on ? langs.filter((c) => c !== code) : [...langs, code]
+  return LANGUAGES.map((l) => l.code).filter((c) => c === 'en' || next.includes(c))
+}
 export const HUB_URL = (() => {
   try {
     return new URLSearchParams(location.search).get('hub') || localStorage.getItem('worshipCaptions.url') || 'ws://localhost:8765'
