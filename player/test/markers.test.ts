@@ -39,3 +39,12 @@ test('prepared caption file', async () => {
   assert.equal(liveTranslation(true, true, true), true) // unless the notes ask for it
   assert.equal(liveTranslation(false, null, false), false)
 })
+
+test('caption file can switch live translation per slide', async () => {
+  const { parseCaptionFile, translationStates } = await import('../src/markers.ts')
+  const f = parseCaptionFile(JSON.stringify({ slides: { '2': { live: false }, '4': { live: true, en: 'x' } } }))
+  assert.deepEqual([...f.live], [[2, false], [4, true]])
+  assert.deepEqual([...f.slides.keys()], [4])
+  const markers = [1, 2, 3, 4, 5].map((no) => f.live.get(no) ?? null)
+  assert.deepEqual(translationStates(markers), [false, false, false, true, true])
+})

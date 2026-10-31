@@ -7,7 +7,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { SlideThumb } from 'ieum-slides/SlideThumb'
 import { imageUrls, loadDeck, preloadImages, type PlayerDeck } from './deck'
-import { liveTranslation, mismatchedSlides, parseCaptionFile, type CaptionFile } from './markers'
+import { liveTranslation, mismatchedSlides, parseCaptionFile, translationStates, type CaptionFile } from './markers'
 import { CHANNEL, Hub, LANGUAGES, MAX_LANGS, NEXT_KEYS, PREV_KEYS, toggleLang, type CaptionLine, type ShowMessage } from './link'
 import './player.css'
 
@@ -51,6 +51,14 @@ function Presenter() {
     }
   })
   const [black, setBlack] = useState(false)
+  // Caption text size on the projector (1 = default), kept between services
+  const [capScale, setCapScale] = useState(() => {
+    try {
+      return Number(localStorage.getItem('worshipPlayer.capScale')) || 1
+    } catch {
+      return 1
+    }
+  })
   const [hubUp, setHubUp] = useState(false)
   const [lastCaption, setLastCaption] = useState<CaptionLine[]>([])
   const [playing, setPlaying] = useState<string | null>(null)
@@ -112,19 +120,30 @@ function Presenter() {
     [channel, deck, captions, loadCaptions],
   )
 
+  // On/off markers: the slide's notes, else the caption file's "live" entry
+  const markers = useMemo(
+    () => deck?.slides.map((s) => s.marker ?? captions?.live.get(s.no) ?? null) ?? [],
+    [deck, captions],
+  )
+  const carried = useMemo(() => translationStates(markers), [markers])
+  useEffect(() => {
+    // A newly opened caption file can change the state of the slide already on screen
+    if (captions && markers.length) setTranslate(carried[index] ?? false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [captions])
+
   const go = useCallback(
     (to: number) => {
       if (!deck) return
       const next = Math.max(0, Math.min(deck.slides.length - 1, to))
       if (next === index) return
-      const s = deck.slides[next]!
       // A marker on the new slide decides; a jump takes the state worked out for that slide;
       // otherwise the current state (possibly switched by hand with T) carries on.
-      if (s.marker !== null) setTranslate(s.marker)
-      else if (Math.abs(next - index) > 1) setTranslate(s.translate)
+      if (markers[next] != null) setTranslate(markers[next]!)
+      else if (Math.abs(next - index) > 1) setTranslate(carried[next]!)
       setIndex(next)
     },
-    [deck, index],
+    [deck, index, markers, carried],
   )
 
   const handleKey = useCallback(
@@ -135,13 +154,15 @@ function Presenter() {
       else if (key === 'End' && deck) go(deck.slides.length - 1)
       else if (key === 'b' || key === 'B' || key === '.') setBlack((b) => !b)
       else if (key === 't' || key === 'T') setTranslate((t) => !t)
+      else if (key === '+' || key === '=') setCapScale((v) => Math.min(2, Math.round((v + 0.1) * 10) / 10))
+      else if (key === '-' || key === '_') setCapScale((v) => Math.max(0.6, Math.round((v - 0.1) * 10) / 10))
     },
     [go, index, deck],
   )
 
   const fixed = captions?.slides.get(index + 1) ?? null
-  const live = deck ? liveTranslation(translate, deck.slides[index]!.marker, !!fixed) : false
-  const show: ShowMessage = { type: 'state', index, translate: live, black, langs, fixed }
+  const live = deck ? liveTranslation(translate, markers[index] ?? null, !!fixed) : false
+  const show: ShowMessage = { type: 'state', index, translate: live, black, langs, fixed, scale: capScale }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -161,7 +182,15 @@ function Presenter() {
   useEffect(() => {
     channel.postMessage(show)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel, index, live, black, langs, fixed])
+  }, [channel, index, live, black, langs, fixed, capScale])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('worshipPlayer.capScale', String(capScale))
+    } catch {
+      /* not remembered in private mode */
+    }
+  }, [capScale])
 
   // Translation engine follows the slide (it stops sending sound to Google while off).
   // Sent when the state changes and again whenever the hub (re)connects.
@@ -308,6 +337,12 @@ function Presenter() {
           {captions ? `자막 파일: ${captions.title || captions.slides.size + '장'}` : '자막 파일 열기'}
           <input type="file" accept=".json" hidden onChange={(e) => e.target.files?.[0] && void loadCaptions(e.target.files[0], deck)} />
         </label>
+        <span className="cap-size" title="프로젝터 자막 글씨 크기 (- / + 키)">
+          자막 글씨
+          <button onClick={() => handleKey('-')}>A−</button>
+          <b>{Math.round(capScale * 100)}%</b>
+          <button onClick={() => handleKey('+')}>A+</button>
+        </span>
         <span className={hubUp ? 'dot up' : 'dot down'} title="자막 서버 (caption_hub.py)">
           {hubUp ? '자막 서버 연결됨' : '자막 서버 없음'}
         </span>
@@ -344,7 +379,7 @@ function Presenter() {
                 ? lastCaption.map((l, i) => <div key={i}>{l.text}</div>)
                 : '(아직 없음)'}
           </div>
-          <div className="keys">→ / ← 넘기기 · T 번역 켜기/끄기 · B 화면 가림 · Home/End 처음/끝</div>
+          <div className="keys">→ / ← 넘기기 · T 번역 켜기/끄기 · B 화면 가림 · −/+ 자막 글씨 · Home/End 처음/끝</div>
         </aside>
       </main>
       <div className="strip" ref={stripRef}>
@@ -354,7 +389,7 @@ function Presenter() {
             data-i={i}
             className={
               (i === index ? 'thumb current ' : 'thumb ') +
-              (captions?.slides.has(s.no) ? 'tr-fixed' : liveTranslation(s.translate, s.marker, false) ? 'tr-on' : 'tr-off')
+              (captions?.slides.has(s.no) ? 'tr-fixed' : liveTranslation(carried[i]!, markers[i] ?? null, false) ? 'tr-on' : 'tr-off')
             }
             onClick={() => go(i)}
             title={s.title}
@@ -362,7 +397,7 @@ function Presenter() {
             <SlideThumb slide={s.render} images={images} width={144} />
             <span>
               {s.no}
-              {captions?.slides.has(s.no) ? ' · 자막' : s.marker === true ? ' · 번역 ON' : s.marker === false ? ' · 번역 OFF' : ''}
+              {captions?.slides.has(s.no) ? ' · 자막' : markers[i] === true ? ' · 번역 ON' : markers[i] === false ? ' · 번역 OFF' : ''}
             </span>
           </button>
         ))}

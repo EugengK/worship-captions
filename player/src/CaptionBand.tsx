@@ -17,10 +17,12 @@ export function CaptionBand({
   translate,
   langs,
   fixed,
+  scale = 1,
 }: {
   translate: boolean
   langs: string[]
   fixed: Record<string, string> | null
+  scale?: number
 }): React.ReactElement | null {
   const [lines, setLines] = useState<CaptionLine[]>([])
   const [visible, setVisible] = useState(false)
@@ -67,7 +69,7 @@ export function CaptionBand({
     <div
       className={`caption-band n${shown.length}${fixed ? ' fixed' : ''}`}
       aria-live="polite"
-      style={{ opacity: fixed || visible ? 1 : 0 }}
+      style={{ opacity: fixed || visible ? 1 : 0, ['--cap' as string]: scale }}
     >
       {shown.map((l, i) => (
         <div key={i} lang={l.lang} className={i === 0 ? 'caption-first' : 'caption-second'}>

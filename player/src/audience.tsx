@@ -32,7 +32,7 @@ function Audience() {
   const [deck, setDeck] = useState<PlayerDeck | null>(null)
   const [images, setImages] = useState(new Map<string, HTMLImageElement>())
   const [state, setState] = useState<Omit<Extract<ShowMessage, { type: 'state' }>, 'type'>>({
-    index: 0, translate: false, black: false, langs: ['en'], fixed: null,
+    index: 0, translate: false, black: false, langs: ['en'], fixed: null, scale: 1,
   })
   const [fullscreen, setFullscreen] = useState(false)
   const { w, h } = useWindowSize()
@@ -94,7 +94,7 @@ function Audience() {
       <div className="audience-slide" style={{ width, visibility: state.black ? 'hidden' : 'visible' }}>
         <SlideThumb slide={render} images={images} width={width} />
       </div>
-      <CaptionBand translate={state.translate} langs={state.langs} fixed={state.fixed} />
+      <CaptionBand translate={state.translate} langs={state.langs} fixed={state.fixed} scale={state.scale} />
     </div>
   )
 }

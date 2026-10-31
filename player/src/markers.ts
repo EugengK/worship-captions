@@ -43,14 +43,18 @@ export interface CaptionFile {
   title: string
   /** 1-based slide number → captions */
   slides: Map<number, FixedCaption>
+  /** 1-based slide number → live translation on/off ("live" key), same role as a notes marker */
+  live: Map<number, boolean>
   /** Start of the slide's Korean text, to notice a deck that changed after the file was made */
   expect: Map<number, string>
 }
 
 /**
  * Reads a prepared-captions file:
- *   { "title": "...", "slides": { "38": { "ko": "슬라이드 첫 글", "en": "...", "th": "..." }, ... } }
- * "ko" is only a check against the slide; every other key is a caption language.
+ *   { "title": "...", "slides": { "38": { "ko": "슬라이드 첫 글", "en": "...", "th": "..." },
+ *                                 "73": { "live": true }, ... } }
+ * "ko" is only a check against the slide; "live" switches live translation on/off from that slide
+ * like a [번역 ON]/[번역 OFF] note (so the deck needs no notes); every other key is a caption language.
  */
 export function parseCaptionFile(text: string): CaptionFile {
   const data = JSON.parse(text)
@@ -59,18 +63,21 @@ export function parseCaptionFile(text: string): CaptionFile {
   }
   const slides = new Map<number, FixedCaption>()
   const expect = new Map<number, string>()
+  const live = new Map<number, boolean>()
   for (const [key, value] of Object.entries(data.slides as Record<string, unknown>)) {
     const no = Number(key)
     if (!Number.isInteger(no) || no < 1 || !value || typeof value !== 'object') continue
     const caption: FixedCaption = {}
-    for (const [lang, t] of Object.entries(value as Record<string, unknown>)) {
+    const entry = value as Record<string, unknown>
+    if (typeof entry.live === 'boolean') live.set(no, entry.live)
+    for (const [lang, t] of Object.entries(entry)) {
       if (typeof t !== 'string' || !t.trim()) continue
       if (lang === 'ko') expect.set(no, t.trim())
       else caption[lang] = t.trim()
     }
     if (Object.keys(caption).length) slides.set(no, caption)
   }
-  return { title: typeof data.title === 'string' ? data.title : '', slides, expect }
+  return { title: typeof data.title === 'string' ? data.title : '', slides, live, expect }
 }
 
 const squash = (s: string) => s.replace(/\s+/g, '')

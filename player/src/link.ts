@@ -27,6 +27,8 @@ export type ShowMessage =
       langs: string[]
       /** Prepared captions for this slide (language → text), shown instead of live ones */
       fixed: Record<string, string> | null
+      /** Caption text size, 1 = default */
+      scale: number
     }
   | { type: 'key'; key: string }
 

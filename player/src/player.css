@@ -13,14 +13,15 @@ button { font: inherit; cursor: pointer; }
   line-height: 1.3; text-align: center; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
   font-family: -apple-system, BlinkMacSystemFont, "Noto Sans Thai", "Thonburi", "Apple SD Gothic Neo", "PingFang SC", sans-serif;
 }
-.caption-first { color: #fff; font-size: 2.5vw; font-weight: 600; }
-.caption-second { color: #ffe08a; font-size: 2.3vw; margin-top: 0.4vh; }
-.caption-band.n3 .caption-first { font-size: 2.1vw; }
+/* Sizes scale with --cap (presenter's 자막 글씨 −/+). 2026-10-31: defaults raised ~35% after the first test */
+.caption-first { color: #fff; font-size: calc(3.4vw * var(--cap, 1)); font-weight: 600; }
+.caption-second { color: #ffe08a; font-size: calc(3.1vw * var(--cap, 1)); margin-top: 0.4vh; }
+.caption-band.n3 .caption-first { font-size: calc(2.9vw * var(--cap, 1)); }
+.caption-band.n3 .caption-second { font-size: calc(2.6vw * var(--cap, 1)); }
 .caption-band > div { white-space: pre-line; }
-.caption-band.fixed .caption-first { font-size: 2.2vw; }
-.caption-band.fixed.n3 .caption-first { font-size: 1.9vw; }
-.caption-band.fixed .caption-second { font-size: 1.9vw; }
-.caption-band.n3 .caption-second { font-size: 1.9vw; }
+.caption-band.fixed .caption-first { font-size: calc(3vw * var(--cap, 1)); }
+.caption-band.fixed .caption-second { font-size: calc(2.6vw * var(--cap, 1)); }
+.caption-band.fixed.n3 .caption-first { font-size: calc(2.6vw * var(--cap, 1)); }
 .caption-band.n3 .caption-second + .caption-second { color: #9fd8ff; }
 .fs-hint { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 20; padding: 10px 18px; border-radius: 8px; background: rgba(47, 111, 222, 0.92); color: #fff; font-size: 18px; cursor: pointer; }
 .audience:has(.fs-hint) { cursor: pointer; }
@@ -51,6 +52,8 @@ button { font: inherit; cursor: pointer; }
 .presenter header .lang:disabled:not(.on) { opacity: 0.4; cursor: default; }
 .presenter header .lang.on:disabled { cursor: default; }
 .warn { color: #ffb36b; font-size: 13px; }
+.cap-size { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: #aaa; }
+.presenter header .cap-size button { padding: 3px 8px; }
 .presenter main { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; padding: 14px; min-height: 0; }
 .presenter .current { display: flex; align-items: center; justify-content: center; min-height: 0; overflow: hidden; }
 .presenter aside { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: hidden; }
