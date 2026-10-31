@@ -306,6 +306,12 @@ class GeminiTranscriber:
     async def run(self, queue: asyncio.Queue, on_text) -> None:
         done = False
         while not done:
+            # Google closes a session that gets no sound for about a minute. Waiting for sound
+            # before (re)opening avoids a new session every minute while the mic is silent or
+            # translation is off.
+            first = await queue.get()
+            if first is None:
+                return
             try:
                 async with self.client.aio.live.connect(model=self.model, config=self._config()) as s:
                     log.info("transcription session open (%s)", self.model)
@@ -314,6 +320,8 @@ class GeminiTranscriber:
 
                     async def send():
                         nonlocal done
+                        await s.send_realtime_input(
+                            audio=self.types.Blob(data=first, mime_type=f"audio/pcm;rate={SAMPLE_RATE}"))
                         while True:
                             chunk = await queue.get()
                             if chunk is None:

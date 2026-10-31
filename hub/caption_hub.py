@@ -242,6 +242,7 @@ async def main() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    logging.getLogger("websockets").setLevel(logging.WARNING)  # per-request lines from the phone pages
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
