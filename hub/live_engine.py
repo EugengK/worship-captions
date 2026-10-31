@@ -104,7 +104,7 @@ def load_glossary(path: Path) -> list:
         return []
 
 
-def build_prompt(sentence: str, context: list, glossary: list, langs: list, notes: str = "") -> str:
+def build_prompt(sentence: str, context: list, glossary: list, langs: list, notes: str = "", hint: str = "") -> str:
     """Prompt for one sentence. Only glossary terms that occur in the sentence are included."""
     used = [t for t in glossary if t.get("ko") and t["ko"] in sentence]
     lines = [
@@ -126,6 +126,14 @@ def build_prompt(sentence: str, context: list, glossary: list, langs: list, note
         lines.append("Notes about today's sermon (use them to resolve misheard names and terms): " + notes)
         lines.append("If the sentence names a Bible book, chapter or person that conflicts with these notes, "
                      "it is almost certainly a speech-recognition error: translate it as the notes say.")
+    if hint:
+        lines.append("The preacher is following a manuscript. The matching manuscript passage and its prepared "
+                     "translation:")
+        lines.extend("  " + h for h in hint.splitlines())
+        lines.append("If the spoken sentence means the same as the manuscript, return the prepared translation "
+                     "unchanged (only the part that was actually said, if it is a partial sentence). If anything "
+                     "differs in meaning (numbers, negation, names, added or missing parts), translate what was "
+                     "actually said, reusing the prepared wording where it still fits.")
     if context:
         lines.append("Previous sentences (context only, do not translate):")
         lines.extend("  " + c for c in context)
@@ -146,8 +154,8 @@ class GeminiTranslator:
         self.think_budget = think_budget
         self.notes = notes
 
-    async def translate(self, sentence: str, context: list) -> dict:
-        prompt = build_prompt(sentence, context, self.glossary, self.langs, self.notes)
+    async def translate(self, sentence: str, context: list, hint: str = "") -> dict:
+        prompt = build_prompt(sentence, context, self.glossary, self.langs, self.notes, hint)
         problem = ""
         # Long Bible quotations are sometimes blocked as RECITATION (too close to a copyrighted Bible
         # translation); a second try with more varied wording usually gets through.
@@ -382,8 +390,9 @@ class GatedQueue(asyncio.Queue):
 # ---------------------------------------------------------------- engine
 
 class Engine:
-    def __init__(self, transcriber, translator, hub, langs: list, logfile: Path = None):
+    def __init__(self, transcriber, translator, hub, langs: list, logfile: Path = None, script=None):
         self.transcriber, self.translator, self.hub, self.langs = transcriber, translator, hub, langs
+        self.script = script  # ScriptFollower: prepared sermon translations (script_follow.py), or None
         self.buffer = SentenceBuffer()
         self.context = []
         self.logfile = logfile
@@ -427,10 +436,42 @@ class Engine:
             self._start(sentence)
 
     def _start(self, sentence: str) -> None:
-        """Starts translating at once (sentences overlap) but keeps them in spoken order."""
+        """Starts translating at once (sentences overlap) but keeps them in spoken order.
+
+        With a sermon script: a sentence said exactly as written takes its prepared translation
+        (no translation call); a similar one is translated with the manuscript as a hint, so a
+        changed number or negation is followed; one already shown is skipped; the rest is live."""
+        hint = ""
+        if self.script is not None:
+            m = self.script.match(sentence)
+            where = f"원고 {m.index + 1}" + (f"~{m.index + m.count}" if m.count > 1 else "") + "번"
+            if m.kind == "repeat":
+                log.info("%s 문장 (이미 표시함)", where)
+                self.context.append(sentence)
+                return
+            if m.exact and (out := self.script.translation(m, self.langs)) is not None:
+                log.info("%s 문장 그대로 → 준비된 번역", where)
+                task = asyncio.create_task(self._prepared({**out, "_src": f"script:{m.index + 1}"}))
+                self.context.append(sentence)
+                self.pending.put_nowait((sentence, task))
+                return
+            if m.kind in ("match", "fragment"):
+                log.info("%s 문장과 비슷함 (%.2f/%.2f) → 원고를 참고해 번역", where, m.precision, m.recall)
+                hint = self.script.hint(m, self.langs)
+            else:
+                log.info("원고에 없음 → 즉석 번역")
+        if hint:
+            task = asyncio.create_task(self.translator.translate(sentence, self.context[-3:], hint=hint))
+            self.context.append(sentence)
+            self.pending.put_nowait((sentence, task))
+            return
         task = asyncio.create_task(self.translator.translate(sentence, self.context[-3:]))
         self.context.append(sentence)
         self.pending.put_nowait((sentence, task))
+
+    @staticmethod
+    async def _prepared(out: dict) -> dict:
+        return out
 
     async def _idle_flusher(self) -> None:
         while True:
@@ -481,6 +522,10 @@ class Engine:
                 self._start(rest)
             await self.pending.join()  # finish the last sentences after a file replay
         finally:
+            if self.script is not None:
+                st = self.script.stats
+                log.info("원고 따라가기 결과: 원고 문장 %d, 일부 %d, 반복 %d, 원고에 없음(즉석 번역) %d",
+                         st["match"], st["fragment"], st["repeat"], st["none"])
             if getattr(self.hub, "ws", None) is not None:
                 await self.hub.ws.close()
             for t in tasks:
@@ -494,6 +539,7 @@ async def main() -> None:
     p.add_argument("--phone", action="store_true",
                    help="use a phone as the microphone: it opens an https page served by this Mac (phone_mic.py)")
     p.add_argument("--phone-port", type=int, default=8443)
+    p.add_argument("--script", help="sermon script with prepared translations (JSON, see script_follow.py)")
     p.add_argument("--hub", default="ws://localhost:8765")
     p.add_argument("--glossary", default=str(HERE / "glossary.json"))
     p.add_argument("--stt-model", default=DEFAULT_STT_MODEL)
@@ -507,10 +553,18 @@ async def main() -> None:
     logdir.mkdir(exist_ok=True)
     logfile = logdir / dt.datetime.now().strftime("%Y%m%d-%H%M.jsonl")
 
+    script = None
+    if args.script:
+        from script_follow import ScriptFollower
+        script = ScriptFollower.load(Path(args.script))
+        have = [c for c in langs if all(x.get(c) for x in script.sentences)]
+        log.info("설교 원고: %s (%d문장, 준비된 언어: %s)", script.title or args.script, len(script.sentences),
+                 ", ".join(have) or "없음")
+
     engine = Engine(GeminiTranscriber(args.stt_model),
                     GeminiTranslator(langs, load_glossary(Path(args.glossary)), args.translate_model, args.think_budget,
                                      args.notes),
-                    HubClient(args.hub), langs, logfile)
+                    HubClient(args.hub), langs, logfile, script)
     if args.file:
         source = lambda q: file_chunks(q, args.file)
     elif args.phone:

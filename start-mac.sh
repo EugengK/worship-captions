@@ -10,6 +10,7 @@
 #   bash start-mac.sh                   # 3단계: 마이크로 실시간 번역 (영어)
 #   LANGS=en,th,zh bash start-mac.sh    # 자막 언어 바꾸기
 #   NOTES="창세기 12:1-9. 이 본문에서는 아브람(Abram)" bash start-mac.sh   # 오늘 본문 메모
+#   SCRIPT=~/Downloads/설교.json bash start-mac.sh worship-phone   # 설교 원고 따라가기 (미리 번역한 원고)
 #   bash start-mac.sh reset-key         # 저장된 API 키를 지우고 다시 입력
 #
 # 처음 실행할 때 필요한 프로그램을 설치하고 Gemini API 키를 한 번 묻습니다.
@@ -33,6 +34,12 @@ key_ok() {
 }
 LANGS="${LANGS:-en}"
 NOTES="${NOTES:-}"
+SCRIPT="${SCRIPT:-}"
+ENGINE_EXTRA=()
+if [ -n "$SCRIPT" ]; then
+  [ -f "$SCRIPT" ] || { echo "설교 원고 파일을 찾을 수 없습니다: $SCRIPT"; exit 1; }
+  ENGINE_EXTRA+=(--script "$SCRIPT")
+fi
 
 # 번역 엔진 부품(google-genai 등)이 Python 3.11 이상을 요구합니다. 오래된 맥(Big Sur 등)의 기본 python3는 3.8~3.9입니다.
 py_ok() { "$1" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; }
@@ -166,18 +173,18 @@ case "$MODE" in
   file)
     [ -n "${2:-}" ] || { echo "사용법: bash start-mac.sh file 녹음파일.wav"; exit 1; }
     [ -f "$2" ] || { echo "파일을 찾을 수 없습니다: $2"; exit 1; }
-    .venv/bin/python hub/live_engine.py --file "$2" --langs "$LANGS" --notes "$NOTES"
+    .venv/bin/python hub/live_engine.py --file "$2" --langs "$LANGS" --notes "$NOTES" "${ENGINE_EXTRA[@]+"${ENGINE_EXTRA[@]}"}"
     echo "녹음 파일 번역이 끝났습니다. 기록: hub/logs/"
     ;;
   worship-phone)
     echo "휴대폰을 마이크로 씁니다. 아래에 나오는 https 주소를 휴대폰(같은 Wi-Fi)에서 열고 '시작'을 누르세요."
     echo "맥이 '들어오는 연결을 허용할까요?'라고 물으면 '허용'을 누르세요."
-    .venv/bin/python hub/live_engine.py --phone --langs "$LANGS" --notes "$NOTES"
+    .venv/bin/python hub/live_engine.py --phone --langs "$LANGS" --notes "$NOTES" "${ENGINE_EXTRA[@]+"${ENGINE_EXTRA[@]}"}"
     ;;
   live|worship)
     echo "마이크로 듣는 중입니다. 맥의 '시스템 설정 > 사운드 > 입력'에서 핀마이크 수신기를 고르세요."
     echo "처음에는 터미널의 마이크 사용 허용 창이 뜰 수 있습니다 → 허용."
-    .venv/bin/python hub/live_engine.py --langs "$LANGS" --notes "$NOTES"
+    .venv/bin/python hub/live_engine.py --langs "$LANGS" --notes "$NOTES" "${ENGINE_EXTRA[@]+"${ENGINE_EXTRA[@]}"}"
     ;;
   *)
     echo "알 수 없는 모드: $MODE (worship | worship-phone | phone-test | player-demo | demo | file | live)"; exit 1
