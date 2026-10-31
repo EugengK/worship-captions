@@ -51,25 +51,37 @@ def local_name() -> str:
     return f"{name}.local"
 
 
-def ensure_cert(ip: str, name: str) -> tuple[Path, Path]:
-    """Self-signed certificate for this Mac; remade when the Wi-Fi address is not in it."""
+CA_NAME = "Hobart Korean Church worship Mac (local only)"
+# The CA may only vouch for local addresses: if its key ever leaked, it could not impersonate
+# real websites on a phone that trusts it.
+LOCAL_NETWORKS = ["192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "127.0.0.0/8"]
+
+
+def _x509():
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.x509.oid import NameOID
+    return x509, hashes, serialization, ec, NameOID
 
+
+def _write_key(path: Path, key) -> None:
+    _, _, serialization, _, _ = _x509()
+    path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                       serialization.NoEncryption()))
+    path.chmod(0o600)
+
+
+def ensure_ca() -> tuple[Path, Path]:
+    """This Mac's own certificate authority. Installed once on the preacher's phone, it makes the
+    microphone page trusted (no warning) even when the Wi-Fi address changes."""
+    x509, hashes, serialization, ec, NameOID = _x509()
     CERT_DIR.mkdir(exist_ok=True)
-    cert_file, key_file = CERT_DIR / "phone-mic.crt", CERT_DIR / "phone-mic.key"
-    if cert_file.exists() and key_file.exists():
-        cert = x509.load_pem_x509_certificate(cert_file.read_bytes())
-        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-        still_valid = cert.not_valid_after_utc > dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=7)
-        if still_valid and ipaddress.ip_address(ip) in san.get_values_for_type(x509.IPAddress) \
-                and name in san.get_values_for_type(x509.DNSName):
-            return cert_file, key_file
-
+    ca_file, ca_key = CERT_DIR / "ca.crt", CERT_DIR / "ca.key"
+    if ca_file.exists() and ca_key.exists():
+        return ca_file, ca_key
     key = ec.generate_private_key(ec.SECP256R1())
-    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, CA_NAME)])
     now = dt.datetime.now(dt.timezone.utc)
     cert = (
         x509.CertificateBuilder()
@@ -77,17 +89,60 @@ def ensure_cert(ip: str, name: str) -> tuple[Path, Path]:
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - dt.timedelta(days=1))
-        .not_valid_after(now + dt.timedelta(days=800))  # Apple refuses server certificates over 825 days
-        .add_extension(x509.SubjectAlternativeName([
-            x509.DNSName(name), x509.DNSName("localhost"),
-            x509.IPAddress(ipaddress.ip_address(ip)), x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
-        ]), critical=False)
-        .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+        .not_valid_after(now + dt.timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(x509.KeyUsage(digital_signature=False, content_commitment=False, key_encipherment=False,
+                                     data_encipherment=False, key_agreement=False, key_cert_sign=True,
+                                     crl_sign=True, encipher_only=False, decipher_only=False), critical=True)
+        .add_extension(x509.NameConstraints(
+            permitted_subtrees=[x509.DNSName("local"), x509.DNSName("localhost")]
+            + [x509.IPAddress(ipaddress.ip_network(n)) for n in LOCAL_NETWORKS],
+            excluded_subtrees=None), critical=False)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
         .sign(key, hashes.SHA256())
     )
-    key_file.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-                                           serialization.NoEncryption()))
-    key_file.chmod(0o600)
+    _write_key(ca_key, key)
+    ca_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    return ca_file, ca_key
+
+
+def ensure_cert(ip: str, name: str) -> tuple[Path, Path]:
+    """Certificate for this Mac's page, signed by its own CA; remade when the Wi-Fi address changes."""
+    x509, hashes, serialization, ec, NameOID = _x509()
+    ca_file, ca_key_file = ensure_ca()
+    # The CA may only vouch for local addresses (see LOCAL_NETWORKS); any other address is left out
+    local = any(ipaddress.ip_address(ip) in ipaddress.ip_network(n) for n in LOCAL_NETWORKS)
+    ca = x509.load_pem_x509_certificate(ca_file.read_bytes())
+    cert_file, key_file = CERT_DIR / "phone-mic.crt", CERT_DIR / "phone-mic.key"
+    if cert_file.exists() and key_file.exists():
+        cert = x509.load_pem_x509_certificate(cert_file.read_bytes())
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        still_valid = cert.not_valid_after_utc > dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=7)
+        if still_valid and cert.issuer == ca.subject \
+                and (not local or ipaddress.ip_address(ip) in san.get_values_for_type(x509.IPAddress)) \
+                and name in san.get_values_for_type(x509.DNSName):
+            return cert_file, key_file
+
+    ca_key = serialization.load_pem_private_key(ca_key_file.read_bytes(), password=None)
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = dt.datetime.now(dt.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
+        .issuer_name(ca.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(days=1))
+        .not_valid_after(now + dt.timedelta(days=800))  # Apple refuses server certificates over 825 days
+        .add_extension(x509.SubjectAlternativeName(
+            [x509.DNSName(name), x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
+            + ([x509.IPAddress(ipaddress.ip_address(ip))] if local else [])), critical=False)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
+        .sign(ca_key, hashes.SHA256())
+    )
+    _write_key(key_file, key)
     cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     return cert_file, key_file
 
@@ -148,7 +203,9 @@ class PhoneMic:
         async with serve(handler, "0.0.0.0", self.port, ssl=ctx, process_request=self._page, max_size=1 << 20):
             log.info("휴대폰으로 이 주소를 여세요 (같은 Wi-Fi): https://%s:%d   또는  https://%s:%d",
                      ip, self.port, name, self.port)
-            log.info("처음에는 '안전하지 않은 연결' 경고가 뜹니다 → '자세히 보기' → '이 웹 사이트 방문'")
+            log.info("경고('비공개 연결이 아닙니다')가 뜨면: '자세히 보기' → '이 웹 사이트 방문'. "
+                     "아예 안 뜨게 하려면 아이폰에서 http://%s:8000/ca 를 열어 인증서를 한 번 설치하세요 "
+                     "(맥에서 예배 모드가 켜져 있을 때).", ip)
             await asyncio.Future()
 
 

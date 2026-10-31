@@ -194,6 +194,13 @@ def make_router(url: str):
             return page(LISTENER_PAGE.read_bytes())
         if request.path == "/qr":
             return page(qr_page(url))
+        if request.path == "/ca":
+            # This Mac's own certificate authority, for the preacher's phone (phone_mic.py)
+            from phone_mic import ensure_ca
+            ca_file, _ = ensure_ca()
+            resp = page(ca_file.read_bytes(), "application/x-x509-ca-cert")
+            resp.headers["Content-Disposition"] = 'attachment; filename="worship-mac.crt"'
+            return resp
         return connection.respond(404, "not found\n")
     return route
 

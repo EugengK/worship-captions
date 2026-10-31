@@ -320,3 +320,24 @@ def test_phones_add_their_language_and_cannot_send_captions():
     finally:
         proc.terminate()
         proc.wait()
+
+
+def test_phone_mic_certificate_is_trusted_through_the_mac_ca(tmp_path, monkeypatch):
+    import ssl
+    import phone_mic
+    monkeypatch.setattr(phone_mic, "CERT_DIR", tmp_path)
+    port = free_port()
+
+    async def scenario():
+        server = asyncio.create_task(phone_mic.PhoneMic(port).run(asyncio.Queue()))
+        await asyncio.sleep(1.0)
+        ctx = ssl.create_default_context(cafile=str(tmp_path / "ca.crt"))  # a phone that installed the CA
+        async with websockets.connect(f"wss://localhost:{port}/ws", ssl=ctx) as ws:
+            ok = ws.state.name == "OPEN"
+        server.cancel()
+        return ok
+
+    assert asyncio.run(scenario())
+    ca_before = (tmp_path / "ca.crt").read_bytes()
+    phone_mic.ensure_cert("10.1.2.3", "other.local")  # new Wi-Fi address: new page certificate, same CA
+    assert (tmp_path / "ca.crt").read_bytes() == ca_before
