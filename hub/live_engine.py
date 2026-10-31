@@ -184,8 +184,12 @@ class MicMeter:
     only sign of a missing permission or a wrong input device.
     """
 
-    def __init__(self, every_s: float = 5.0, silent_after_s: float = 10.0):
-        self.every_s, self.silent_after_s = every_s, silent_after_s
+    MAC_HINT = ("① 시스템 설정 > 개인정보 보호 및 보안 > 마이크 에서 '터미널' 켜기 (켠 뒤 터미널을 완전히 종료 후 다시 실행) "
+                "② 시스템 설정 > 사운드 > 입력 에서 올바른 마이크 선택")
+    PHONE_HINT = "휴대폰 페이지의 소리 막대가 움직이는지, Safari 마이크 허용이 켜져 있는지 보세요"
+
+    def __init__(self, every_s: float = 5.0, silent_after_s: float = 10.0, hint: str = MAC_HINT):
+        self.every_s, self.silent_after_s, self.hint = every_s, silent_after_s, hint
         self.peak, self.started, self.last_report, self.heard, self.warned = 0, None, 0.0, False, False
 
     def feed(self, chunk: bytes, now: float) -> None:
@@ -200,9 +204,7 @@ class MicMeter:
             self.peak, self.last_report = 0, now
         if not self.heard and not self.warned and now - self.started >= self.silent_after_s:
             self.warned = True
-            log.warning("마이크에서 소리가 들어오지 않습니다. 확인하세요: "
-                        "① 시스템 설정 > 개인정보 보호 및 보안 > 마이크 에서 '터미널' 켜기 (켠 뒤 터미널을 완전히 종료 후 다시 실행) "
-                        "② 시스템 설정 > 사운드 > 입력 에서 올바른 마이크 선택")
+            log.warning("마이크에서 소리가 들어오지 않습니다. 확인하세요: %s", self.hint)
 
 
 async def mic_chunks(queue: asyncio.Queue) -> None:
@@ -489,6 +491,9 @@ async def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--langs", default="en", help="caption languages, in display order (default en; the worship player can change them)")
     p.add_argument("--file", help="replay this WAV instead of using the microphone")
+    p.add_argument("--phone", action="store_true",
+                   help="use a phone as the microphone: it opens an https page served by this Mac (phone_mic.py)")
+    p.add_argument("--phone-port", type=int, default=8443)
     p.add_argument("--hub", default="ws://localhost:8765")
     p.add_argument("--glossary", default=str(HERE / "glossary.json"))
     p.add_argument("--stt-model", default=DEFAULT_STT_MODEL)
@@ -506,7 +511,14 @@ async def main() -> None:
                     GeminiTranslator(langs, load_glossary(Path(args.glossary)), args.translate_model, args.think_budget,
                                      args.notes),
                     HubClient(args.hub), langs, logfile)
-    source = (lambda q: file_chunks(q, args.file)) if args.file else mic_chunks
+    if args.file:
+        source = lambda q: file_chunks(q, args.file)
+    elif args.phone:
+        from phone_mic import PhoneMic
+        phone = PhoneMic(args.phone_port, status=lambda: {"translating": engine.translating})
+        source = lambda q: phone.run(q, MicMeter(hint=MicMeter.PHONE_HINT))
+    else:
+        source = mic_chunks
     log.info("captions: %s, transcript log: %s", ",".join(langs), logfile)
     await engine.run(source)
 

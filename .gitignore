@@ -10,3 +10,4 @@ __pycache__/
 player/node_modules/
 player/.ieum/
 *.pptx
+hub/certs/

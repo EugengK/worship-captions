@@ -2,6 +2,8 @@
 # 맥에서 실시간 번역 자막을 시험하는 시작 스크립트.
 #
 #   bash start-mac.sh worship           # ★ 예배: 예배 발표기 + 마이크 실시간 번역
+#   bash start-mac.sh worship-phone     # ★ 예배: 위와 같고, 마이크는 휴대폰 (휴대폰에서 https 주소 열기)
+#   bash start-mac.sh phone-test        # 휴대폰 마이크 연결만 시험 (번역·API 비용 없음)
 #   bash start-mac.sh player-demo       # 예배 발표기 + 데모 자막 (인터넷·API 비용 없음)
 #   bash start-mac.sh demo              # 1단계: 데모 자막만 (인터넷·API 비용 없음)
 #   bash start-mac.sh file 녹음.wav     # 2단계: 녹음 파일로 실제 번역 시험
@@ -72,6 +74,12 @@ fi
 SSL_CERT_FILE="$(.venv/bin/python -c 'import certifi; print(certifi.where())' 2>/dev/null || true)"
 [ -n "$SSL_CERT_FILE" ] && export SSL_CERT_FILE || unset SSL_CERT_FILE
 
+if [ "$MODE" = "phone-test" ]; then
+  echo "휴대폰 마이크 시험: 아래 https 주소를 휴대폰에서 열고 '시작'을 누르세요. 소리 크기가 5초마다 나옵니다."
+  echo "맥이 '들어오는 연결을 허용할까요?'라고 물으면 '허용'을 누르세요. 끝내려면 Control + C."
+  exec .venv/bin/python hub/phone_mic.py
+fi
+
 if [ "$MODE" != "demo" ] && [ "$MODE" != "player-demo" ]; then
   if [ -f .env ]; then
     set -a; . ./.env; set +a
@@ -106,7 +114,7 @@ trap 'kill $HUB_PID 2>/dev/null' EXIT
 sleep 1
 
 case "$MODE" in
-  worship|player-demo)
+  worship|worship-phone|player-demo)
     # 예배 발표기: player 폴더만 이 맥 안에서(127.0.0.1) 보여 줍니다. .env 등 다른 파일은 열리지 않습니다.
     # 8080이 다른 프로그램에 쓰이고 있으면 8081, 8082… 중 빈 자리를 씁니다.
     PORT="$(.venv/bin/python - <<'PY'
@@ -161,12 +169,17 @@ case "$MODE" in
     .venv/bin/python hub/live_engine.py --file "$2" --langs "$LANGS" --notes "$NOTES"
     echo "녹음 파일 번역이 끝났습니다. 기록: hub/logs/"
     ;;
+  worship-phone)
+    echo "휴대폰을 마이크로 씁니다. 아래에 나오는 https 주소를 휴대폰(같은 Wi-Fi)에서 열고 '시작'을 누르세요."
+    echo "맥이 '들어오는 연결을 허용할까요?'라고 물으면 '허용'을 누르세요."
+    .venv/bin/python hub/live_engine.py --phone --langs "$LANGS" --notes "$NOTES"
+    ;;
   live|worship)
     echo "마이크로 듣는 중입니다. 맥의 '시스템 설정 > 사운드 > 입력'에서 핀마이크 수신기를 고르세요."
     echo "처음에는 터미널의 마이크 사용 허용 창이 뜰 수 있습니다 → 허용."
     .venv/bin/python hub/live_engine.py --langs "$LANGS" --notes "$NOTES"
     ;;
   *)
-    echo "알 수 없는 모드: $MODE (worship | player-demo | demo | file | live)"; exit 1
+    echo "알 수 없는 모드: $MODE (worship | worship-phone | phone-test | player-demo | demo | file | live)"; exit 1
     ;;
 esac

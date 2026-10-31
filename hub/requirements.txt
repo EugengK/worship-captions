@@ -2,3 +2,4 @@ websockets>=13
 google-genai>=2.0
 numpy
 sounddevice
+cryptography  # self-signed certificate for the phone microphone page (phone_mic.py)

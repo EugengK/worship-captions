@@ -251,3 +251,33 @@ def test_presenter_language_choice_reaches_translator(hub):
 
     # Korean and unknown codes are dropped, at most three lines; on/off is untouched
     assert asyncio.run(scenario()) == (["en", "th", "zh"], ["en", "th", "zh"], True)
+
+
+def test_phone_mic_serves_page_and_queues_audio(tmp_path, monkeypatch):
+    import ssl
+    import urllib.request
+    import phone_mic
+    monkeypatch.setattr(phone_mic, "CERT_DIR", tmp_path)
+    port = free_port()
+
+    async def scenario():
+        q = asyncio.Queue()
+        mic = phone_mic.PhoneMic(port, status=lambda: {"translating": False})
+        server = asyncio.create_task(mic.run(q))
+        await asyncio.sleep(1.0)
+        insecure = ssl.create_default_context()
+        insecure.check_hostname, insecure.verify_mode = False, ssl.CERT_NONE
+        page = await asyncio.to_thread(
+            lambda: urllib.request.urlopen(f"https://localhost:{port}/", context=insecure).read().decode())
+        async with websockets.connect(f"wss://localhost:{port}/ws", ssl=insecure) as ws:
+            status = json.loads(await asyncio.wait_for(ws.recv(), 3))
+            await ws.send(b"\x01\x00" * 1600)
+            chunk = await asyncio.wait_for(q.get(), 3)
+        server.cancel()
+        return page, status, chunk
+
+    page, status, chunk = asyncio.run(scenario())
+    assert "설교 마이크" in page
+    assert status == {"translating": False}
+    assert len(chunk) == 3200
+    assert (tmp_path / "phone-mic.crt").exists() and (tmp_path / "phone-mic.key").stat().st_mode & 0o077 == 0
