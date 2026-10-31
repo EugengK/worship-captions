@@ -194,9 +194,9 @@ var LANGS = [
            "Đức Chúa Trời là Đấng lập giao ước.",
            "Chúng ta được xưng công chính chỉ bởi đức tin.",
            "Sách Giáo Lý Heidelberg, câu hỏi 1: Sự an ủi duy nhất của bạn trong đời sống và trong sự chết là gì?"] },
-  { code: "ko", native: "한국어", en: "Korean captions",
-    ui: { listen: "듣기 시작", pause: "일시정지", live: "생방송 중", waiting: "예배 시작 대기 중",
-          ear: "이어폰을 사용해 주세요", note: "AI 자동 인식 · 오류가 있을 수 있음 · 듣는 동안 화면이 켜져 있습니다",
+  { code: "ko", native: "한국어 자막", en: "Korean captions",
+    ui: { listen: "듣기 시작", pause: "일시정지", live: "자막 나오는 중", waiting: "예배 시작 대기 중",
+          ear: "", note: "AI 자동 받아쓰기 · 오류가 있을 수 있음",
           empty: "예배가 시작되면 이곳에 자막이 나옵니다.", demo: "데모" },
     demo: ["오늘 우리는 창세기 12장 1절 말씀을 함께 묵상하겠습니다.",
            "여호와께서 아브람에게 이르시되, 너는 너의 고향과 친척과 아버지의 집을 떠나 내가 네게 보여 줄 땅으로 가라.",
@@ -205,9 +205,14 @@ var LANGS = [
            "하이델베르크 요리문답 제1문은 묻습니다. 살아서나 죽어서나 당신의 유일한 위로는 무엇입니까?"] }
 ];
 
-var DEMO = new URLSearchParams(location.search).get("live") !== "1";  // demo until the relay server exists
+// Live when served by the caption hub on the worship Mac (http://<Mac>:8000/); demo when opened
+// as a plain file or with ?demo=1, so the layout can still be judged without the Mac.
+var Q = new URLSearchParams(location.search);
+var DEMO = Q.get("demo") === "1" || location.protocol === "file:";
+var VOICE_LANG = { en: "en", th: "th", zh: "zh", vi: "vi" };  // spoken; Korean is captions only
 var $ = function (id) { return document.getElementById(id); };
 var lang = null, playing = false, demoTimer = null, demoIdx = 0, wakeLock = null;
+var ws = null, retry = null, lastLine = "", speakQueue = [], speaking = false;
 
 function store(k, v) { try { v === undefined ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} }
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
@@ -235,10 +240,12 @@ function openLang(l) {
   $("empty").textContent = l.ui.empty;
   $("demoTag").textContent = l.ui.demo;
   $("demoTag").hidden = !DEMO;
+  $("play").hidden = !VOICE_LANG[l.code];
   setStatus("waiting");
   $("pick").classList.remove("active");
   $("listen").classList.add("active");
   store("lang", l.code);
+  sendLang();
 }
 
 function setStatus(s) {
@@ -247,6 +254,8 @@ function setStatus(s) {
 }
 
 function addLine(text) {
+  if (!text || text === lastLine) return;
+  lastLine = text;
   $("empty").style.display = "none";
   var feed = $("feed");
   var lines = feed.querySelectorAll(".line");
@@ -259,6 +268,56 @@ function addLine(text) {
   var all = feed.querySelectorAll(".line");
   if (all.length > 30) feed.removeChild(all[0]);
   feed.scrollTop = feed.scrollHeight;
+  speak(text);
+}
+
+// ---- voice: the phone's own text-to-speech reads each new line (no extra cost) ----
+function pickVoice(code) {
+  var voices = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+  var mine = voices.filter(function (v) { return v.lang.toLowerCase().indexOf(code) === 0; });
+  var local = mine.filter(function (v) { return v.localService; });
+  return (local[0] || mine[0]) || null;
+}
+function speak(text) {
+  if (!playing || !lang || !VOICE_LANG[lang.code] || !window.speechSynthesis) return;
+  speakQueue.push(text);
+  // Falling behind the preacher helps nobody: keep only the newest two lines
+  while (speakQueue.length > 2) speakQueue.shift();
+  if (!speaking) speakNext();
+}
+function speakNext() {
+  var text = speakQueue.shift();
+  if (!text) { speaking = false; return; }
+  speaking = true;
+  var u = new SpeechSynthesisUtterance(text);
+  var v = pickVoice(VOICE_LANG[lang.code]);
+  if (v) u.voice = v;
+  u.lang = v ? v.lang : VOICE_LANG[lang.code];
+  u.rate = 1.05;
+  u.onend = u.onerror = function () { speakNext(); };
+  speechSynthesis.speak(u);
+}
+
+// ---- connection to the caption hub on the worship Mac ----
+function sendLang() {
+  if (ws && ws.readyState === 1 && lang) ws.send(JSON.stringify({ type: "listen", lang: lang.code }));
+}
+function connect() {
+  if (DEMO) return;
+  clearTimeout(retry);
+  ws = new WebSocket("ws://" + location.host + "/ws");
+  ws.onopen = sendLang;
+  ws.onmessage = function (ev) {
+    var m;
+    try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.type === "caption" && lang && Array.isArray(m.lines)) {
+      m.lines.forEach(function (l) { if (l.lang === lang.code) { setStatus("live"); addLine(l.text); } });
+    }
+  };
+  ws.onclose = function () {
+    if (lang) setStatus("waiting");
+    retry = setTimeout(connect, 3000);
+  };
 }
 
 function togglePlay() {
@@ -266,7 +325,15 @@ function togglePlay() {
   $("play").classList.toggle("on", playing);
   $("playIcon").innerHTML = playing ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>';
   $("playText").textContent = playing ? lang.ui.pause : lang.ui.listen;
-  if (playing) { keepAwake(); startDemo(); } else { releaseAwake(); stopDemo(); }
+  if (playing) {
+    // Phones only allow speech that starts from a tap: say something silent right now
+    if (window.speechSynthesis) { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(" ")); }
+    keepAwake(); startDemo();
+  } else {
+    speakQueue = []; speaking = false;
+    if (window.speechSynthesis) speechSynthesis.cancel();
+    releaseAwake(); stopDemo();
+  }
 }
 
 // Demo: plays the sample sentences so the layout can be judged on a real phone.
@@ -279,7 +346,7 @@ function startDemo() {
 }
 function stopDemo() { clearInterval(demoTimer); demoTimer = null; }
 
-// Keep the phone screen on while listening (where the browser supports it).
+// Keep the phone screen on while listening (where the browser allows it).
 function keepAwake() {
   if (!("wakeLock" in navigator)) return;
   navigator.wakeLock.request("screen").then(function (w) { wakeLock = w; }).catch(function () {});
@@ -288,6 +355,7 @@ function releaseAwake() { if (wakeLock) { wakeLock.release(); wakeLock = null; }
 document.addEventListener("visibilitychange", function () {
   if (playing && document.visibilityState === "visible") keepAwake();
 });
+if (window.speechSynthesis) speechSynthesis.onvoiceschanged = function () {};  // loads the voice list early
 
 $("play").onclick = togglePlay;
 $("back").onclick = function () {
@@ -301,6 +369,7 @@ $("smaller").onclick = function () { size = Math.max(18, size - 3); applySize();
 $("bigger").onclick = function () { size = Math.min(44, size + 3); applySize(); };
 applySize();
 
+connect();
 // Returning visitors go straight to their language.
 var saved = load("lang");
 if (saved) LANGS.forEach(function (l) { if (l.code === saved) openLang(l); });

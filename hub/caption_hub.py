@@ -14,6 +14,12 @@ The worship player sends {"type": "control", "translate": true|false, "langs": [
 when a slide's notes switch translation on or off or the caption languages change. The hub keeps
 the merged state, forwards it when something changed, and gives it to every client that connects,
 so an engine started later still learns the current state.
+
+Congregation phones (--lan-port, e.g. 8000): http://<this Mac>:<port>/ serves web/listener.html,
+which receives captions over ws://<this Mac>:<port>/ws and reads them aloud with the phone's own
+voice. A phone only says which language it listens to ({"type": "listen", "lang": "th"}); the
+engine is then asked to translate into that language too, even if the projector does not show
+it. Phones cannot send captions. /qr shows a QR code of the address for the projector.
 """
 
 import argparse
@@ -21,11 +27,22 @@ import asyncio
 import json
 import logging
 
+from pathlib import Path
+
 import websockets
+from websockets.asyncio.server import serve
+from websockets.datastructures import Headers
+from websockets.http11 import Response
 
 log = logging.getLogger("caption-hub")
-clients = set()
-control = {}  # latest translate on/off and caption languages from the worship player
+HERE = Path(__file__).resolve().parent
+LISTENER_PAGE = HERE.parent / "web" / "listener.html"
+LANG_ORDER = ["en", "zh", "th", "vi"]  # languages the engine can translate into
+
+clients = set()     # this Mac: the engine and the worship player windows
+listeners = {}      # congregation phones -> the language each one listens to
+control = {}        # latest translate on/off, slide and projector languages from the worship player
+last_control = ""   # last control message sent to the engine, to skip repeats
 
 # Sample captions in every language the presenter can pick. The English/Thai lines come from the
 # first Gemini Live Translate test (docs/06); the Chinese and Vietnamese lines were written by
@@ -58,17 +75,42 @@ DEMO = [
 
 
 async def broadcast(message: str, sender=None) -> None:
-    targets = clients - {sender} if sender else clients
+    targets = (clients | set(listeners)) - {sender}
     if targets:
         websockets.broadcast(targets, message)
+
+
+def engine_langs() -> list:
+    """Projector languages plus every language a phone is listening to."""
+    want = set(control.get("screen_langs") or ["en"]) | {l for l in listeners.values() if l}
+    return [c for c in LANG_ORDER if c in want] or ["en"]
+
+
+def control_message() -> str:
+    msg = {"type": "control", "slide": control.get("slide"), "langs": engine_langs()}
+    if "translate" in control:
+        msg["translate"] = control["translate"]
+    return json.dumps(msg, ensure_ascii=False)
+
+
+async def send_control(sender=None) -> None:
+    """Tells the engine (and the player) the current state, if it changed."""
+    global last_control
+    msg = control_message()
+    if msg == last_control:
+        return
+    last_control = msg
+    targets = clients - {sender}
+    if targets:
+        websockets.broadcast(targets, msg)
 
 
 async def handler(ws) -> None:
     clients.add(ws)
     log.info("client connected (%d total)", len(clients))
     try:
-        if control:
-            await ws.send(json.dumps(control, ensure_ascii=False))
+        if control or listeners:
+            await ws.send(control_message())
         async for raw in ws:
             try:
                 msg = json.loads(raw)
@@ -78,12 +120,17 @@ async def handler(ws) -> None:
             if kind in ("caption", "clear"):
                 await broadcast(json.dumps(msg, ensure_ascii=False), sender=ws)
             elif kind == "control":
-                changed = {k: msg[k] for k in ("translate", "langs") if k in msg and control.get(k) != msg[k]}
-                if not changed:
+                before = control_message()
+                if isinstance(msg.get("translate"), bool):
+                    control["translate"] = msg["translate"]
+                if isinstance(msg.get("langs"), list):
+                    control["screen_langs"] = msg["langs"]
+                control["slide"] = msg.get("slide")
+                if json.loads(before) | {"slide": None} == json.loads(control_message()) | {"slide": None}:
                     continue
-                control.update(type="control", slide=msg.get("slide"), **changed)
-                log.info("control %s (slide %s)", changed, msg.get("slide"))
-                await broadcast(json.dumps(control, ensure_ascii=False), sender=ws)
+                log.info("control %s (slide %s)", {k: v for k, v in json.loads(control_message()).items()
+                                                   if k in ("translate", "langs")}, msg.get("slide"))
+                await send_control(sender=ws)
     except websockets.ConnectionClosed:
         pass  # a screen or the engine went away without saying goodbye; not an error
     finally:
@@ -91,12 +138,72 @@ async def handler(ws) -> None:
         log.info("client disconnected (%d total)", len(clients))
 
 
+# ---------------------------------------------------------------- congregation phones
+
+def listener_counts() -> str:
+    counts = {}
+    for l in listeners.values():
+        counts[l or "?"] = counts.get(l or "?", 0) + 1
+    return ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "없음"
+
+
+async def listener_handler(ws) -> None:
+    listeners[ws] = None
+    try:
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+            except ValueError:
+                continue
+            if msg.get("type") == "listen":
+                lang = msg.get("lang")
+                listeners[ws] = lang if lang in LANG_ORDER or lang == "ko" else None
+                log.info("휴대폰 청취자: %s", listener_counts())
+                await send_control()
+    except websockets.ConnectionClosed:
+        pass
+    finally:
+        listeners.pop(ws, None)
+        log.info("휴대폰 청취자: %s", listener_counts())
+        await send_control()
+
+
+def page(body: bytes, ctype: str = "text/html; charset=utf-8") -> Response:
+    return Response(200, "OK", Headers([("Content-Type", ctype), ("Content-Length", str(len(body))),
+                                        ("Cache-Control", "no-store")]), body)
+
+
+def qr_page(url: str) -> bytes:
+    import segno
+    svg = segno.make(url, error="m").svg_inline(scale=12, dark="#000", light="#fff")
+    return f"""<!doctype html><meta charset="utf-8"><title>통역 듣기 QR</title>
+<body style="margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
+background:#fff;font:28px -apple-system,'Apple SD Gothic Neo',sans-serif;gap:24px;text-align:center">
+<div style="font-size:40px;font-weight:700">실시간 통역 · Live interpretation</div>
+{svg}
+<div>{url}</div>
+<div style="font-size:22px;color:#555">교회 Wi-Fi에 연결한 뒤 휴대폰 카메라로 찍으세요 · Connect to the church Wi-Fi, then scan</div>
+</body>""".encode("utf-8")
+
+
+def make_router(url: str):
+    def route(connection, request):
+        if request.path.startswith("/ws"):
+            return None
+        if request.path.split("?")[0] in ("/", "/index.html"):
+            return page(LISTENER_PAGE.read_bytes())
+        if request.path == "/qr":
+            return page(qr_page(url))
+        return connection.respond(404, "not found\n")
+    return route
+
+
 async def demo_loop() -> None:
     """Five captions about 4 s apart, then 12 s of silence so the band's auto-hide is visible.
     Shows the languages chosen on the presenter screen (English until one is chosen)."""
     while True:
         for sample in DEMO:
-            langs = control.get("langs") or ["en"]
+            langs = engine_langs()
             lines = [{"lang": c, "text": sample[c]} for c in langs if c in sample]
             msg = {"type": "caption", "lines": lines}
             await broadcast(json.dumps(msg, ensure_ascii=False))
@@ -108,11 +215,18 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--demo", action="store_true", help="play sample captions on a loop")
+    parser.add_argument("--lan-port", type=int, default=0,
+                        help="also serve the congregation phone page on this port over Wi-Fi (e.g. 8000)")
     args = parser.parse_args()
 
-    # Bind to localhost only: the slideshow runs on the same Mac.
-    async with websockets.serve(handler, "localhost", args.port):
+    # The engine and the slideshow are on this Mac: their port stays on localhost.
+    async with serve(handler, "localhost", args.port):
         log.info("caption hub listening on ws://localhost:%d%s", args.port, " (demo)" if args.demo else "")
+        if args.lan_port:
+            from phone_mic import lan_ip
+            url = f"http://{lan_ip()}:{args.lan_port}/"
+            await serve(listener_handler, "0.0.0.0", args.lan_port, process_request=make_router(url))
+            log.info("성도 휴대폰 통역 페이지: %s   (QR 화면: %sqr)", url, url)
         if args.demo:
             await demo_loop()
         else:

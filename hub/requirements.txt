@@ -3,3 +3,4 @@ google-genai>=2.0
 numpy
 sounddevice
 cryptography  # self-signed certificate for the phone microphone page (phone_mic.py)
+segno  # QR code for the congregation's phone page

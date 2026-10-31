@@ -41,7 +41,9 @@ export function CaptionBand({
 
   useEffect(() => {
     const hub = new Hub((msg) => {
-      if (msg.type === 'caption' && Array.isArray(msg.lines)) {
+      // Prepared slide captions come from the presenter for the congregation phones; this band
+      // already shows them from the slide itself
+      if (msg.type === 'caption' && Array.isArray(msg.lines) && msg.source !== 'slide') {
         const off = offSince.current
         if (off !== null && Date.now() - off > GRACE_AFTER_OFF_MS) return
         const next = msg.lines.filter((l) => l && typeof l.text === 'string' && l.text.trim())

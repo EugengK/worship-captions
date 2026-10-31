@@ -33,7 +33,7 @@ log = logging.getLogger("live-engine")
 
 HERE = Path(__file__).resolve().parent
 LANG_NAMES = {"en": "English", "th": "Thai", "zh": "Simplified Chinese", "vi": "Vietnamese", "ko": "Korean"}
-MAX_LANGS = 3  # caption lines the projector band shows at once
+MAX_LANGS = 4  # every language the engine offers; the projector shows at most 3 of them
 
 # Transcription-only Live model: Korean text, no audio output to pay for (docs/13). The
 # live-translate model also works (it returns the Korean input transcription too) but
@@ -493,6 +493,8 @@ class Engine:
                 self.pending.task_done()
                 continue
             lines = [{"lang": c, "text": out[c]} for c in self.langs if out.get(c)]
+            # The Korean as heard, for the congregation phones' "한국어 자막" (the projector ignores it)
+            lines.append({"lang": "ko", "text": sentence})
             if lines:
                 await self.hub.send({"type": "caption", "lines": lines})
             log.info("%s -> %s", sentence, " | ".join(l["text"] for l in lines))

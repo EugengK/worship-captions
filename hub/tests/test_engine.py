@@ -105,7 +105,8 @@ def test_engine_sends_captions_through_hub(hub, tmp_path):
     msgs = asyncio.run(scenario())
     assert msgs[0] == {"type": "caption", "lines": [
         {"lang": "en", "text": "EN<하나님은 언약을 맺으십니다.>"},
-        {"lang": "th", "text": "TH<하나님은 언약을 맺으십니다.>"}]}
+        {"lang": "th", "text": "TH<하나님은 언약을 맺으십니다.>"},
+        {"lang": "ko", "text": "하나님은 언약을 맺으십니다."}]}  # Korean as heard, for the phones
     assert msgs[1]["lines"][0]["text"] == "EN<아멘>"  # no full stop: flushed when speech ends
     log = [json.loads(line) for line in (tmp_path / "log.jsonl").read_text(encoding="utf-8").splitlines()]
     assert [entry["ko"] for entry in log] == ["하나님은 언약을 맺으십니다.", "아멘"]
@@ -249,8 +250,8 @@ def test_presenter_language_choice_reaches_translator(hub):
         listener.cancel()
         return engine.langs, engine.translator.langs, engine.translating
 
-    # Korean and unknown codes are dropped, at most three lines; on/off is untouched
-    assert asyncio.run(scenario()) == (["en", "th", "zh"], ["en", "th", "zh"], True)
+    # Korean and unknown codes are dropped; on/off is untouched
+    assert asyncio.run(scenario()) == (["en", "zh", "th", "vi"], ["en", "zh", "th", "vi"], True)
 
 
 def test_phone_mic_serves_page_and_queues_audio(tmp_path, monkeypatch):
@@ -281,3 +282,41 @@ def test_phone_mic_serves_page_and_queues_audio(tmp_path, monkeypatch):
     assert status == {"translating": False}
     assert len(chunk) == 3200
     assert (tmp_path / "phone-mic.crt").exists() and (tmp_path / "phone-mic.key").stat().st_mode & 0o077 == 0
+
+
+def test_phones_add_their_language_and_cannot_send_captions():
+    port, lan = free_port(), free_port()
+    proc = subprocess.Popen([sys.executable, str(HUB_DIR / "caption_hub.py"), "--port", str(port), "--lan-port", str(lan)])
+    try:
+        for _ in range(50):
+            try:
+                socket.create_connection(("localhost", lan), timeout=0.1).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+
+        async def scenario():
+            import urllib.request
+            page = await asyncio.to_thread(lambda: urllib.request.urlopen(f"http://localhost:{lan}/").read().decode())
+            qr = await asyncio.to_thread(lambda: urllib.request.urlopen(f"http://localhost:{lan}/qr").read().decode())
+            async with websockets.connect(f"ws://localhost:{port}") as engine, \
+                    websockets.connect(f"ws://localhost:{lan}/ws") as phone:
+                await phone.send(json.dumps({"type": "listen", "lang": "th"}))
+                ctl = json.loads(await asyncio.wait_for(engine.recv(), 2))
+                await phone.send(json.dumps({"type": "caption", "lines": [{"lang": "th", "text": "spoof"}]}))
+                await engine.send(json.dumps({"type": "caption", "lines": [{"lang": "th", "text": "สวัสดี"}]}))
+                got = json.loads(await asyncio.wait_for(phone.recv(), 2))
+                try:
+                    spoof = await asyncio.wait_for(engine.recv(), 0.5)
+                except asyncio.TimeoutError:
+                    spoof = None
+            return page, qr, ctl, got, spoof
+
+        page, qr, ctl, got, spoof = asyncio.run(scenario())
+        assert "Hobart Korean Church" in page and "<svg" in qr
+        assert ctl["langs"] == ["en", "th"]  # projector default English + the phone's Thai
+        assert got["lines"][0]["text"] == "สวัสดี"
+        assert spoof is None  # a phone cannot put captions on the screen
+    finally:
+        proc.terminate()
+        proc.wait()

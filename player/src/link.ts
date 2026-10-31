@@ -10,7 +10,7 @@ export interface CaptionLine {
 }
 
 export type HubMessage =
-  | { type: 'caption'; lines: CaptionLine[] }
+  | { type: 'caption'; lines: CaptionLine[]; source?: 'slide' }
   | { type: 'clear' }
   | { type: 'control'; translate?: boolean; langs?: string[]; slide?: number }
 

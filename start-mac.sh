@@ -113,7 +113,7 @@ if [ "$MODE" != "demo" ] && [ "$MODE" != "player-demo" ]; then
   set -a; . ./.env; set +a
 fi
 
-HUB_ARGS=()
+HUB_ARGS=(--lan-port 8000)  # 성도 휴대폰 통역 페이지 (같은 Wi-Fi에서 http://이 맥 주소:8000)
 case "$MODE" in demo|player-demo) HUB_ARGS+=(--demo) ;; esac
 .venv/bin/python hub/caption_hub.py "${HUB_ARGS[@]+"${HUB_ARGS[@]}"}" &
 HUB_PID=$!

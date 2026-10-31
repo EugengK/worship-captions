@@ -184,6 +184,13 @@ function Presenter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel, index, live, black, langs, fixed, capScale])
 
+  // Congregation phones get the prepared captions too (they hear and read them in their language)
+  useEffect(() => {
+    if (fixed && hubUp) {
+      hub.send({ type: 'caption', source: 'slide', lines: Object.entries(fixed).map(([lang, text]) => ({ lang, text })) })
+    }
+  }, [hub, fixed, hubUp])
+
   useEffect(() => {
     try {
       localStorage.setItem('worshipPlayer.capScale', String(capScale))
