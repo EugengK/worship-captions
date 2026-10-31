@@ -35,19 +35,21 @@ NOTES="${NOTES:-}"
 # 번역 엔진 부품(google-genai 등)이 Python 3.11 이상을 요구합니다. 오래된 맥(Big Sur 등)의 기본 python3는 3.8~3.9입니다.
 py_ok() { "$1" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; }
 PY=""
-for cand in /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
+UV_PY="$("$HOME/.local/bin/uv" python find 3.12 2>/dev/null || true)"  # Python installed by install-python-mac.sh
+for cand in "$UV_PY" /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
             /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 python3; do
+  [ -n "$cand" ] || continue
   if command -v "$cand" >/dev/null 2>&1 && py_ok "$cand"; then PY="$cand"; break; fi
 done
 if [ -z "$PY" ]; then
   echo "Python 3.11 이상이 필요합니다 (지금: $(python3 --version 2>&1 || echo 없음))."
-  read -rp "지금 python.org에서 Python 3.13을 받아 설치할까요? [Y/n] " yn
+  read -rp "지금 내 사용자 폴더에 Python 3.12를 설치할까요? (관리자 암호 필요 없음) [Y/n] " yn
   case "${yn:-Y}" in
-    [Nn]*) echo "https://www.python.org/downloads/macos/ 에서 설치한 뒤 다시 실행하세요."; exit 1 ;;
+    [Nn]*) echo "bash install-python-mac.sh 로 설치한 뒤 다시 실행하세요."; exit 1 ;;
   esac
   bash ./install-python-mac.sh
-  PY=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3
-  py_ok "$PY" || { echo "설치한 Python을 찾지 못했습니다. 터미널 화면을 Claude에게 보내 주세요."; exit 1; }
+  PY="$("$HOME/.local/bin/uv" python find 3.12 2>/dev/null || true)"
+  [ -n "$PY" ] && py_ok "$PY" || { echo "설치한 Python을 찾지 못했습니다. 터미널 화면을 Claude에게 보내 주세요."; exit 1; }
 fi
 if [ -x .venv/bin/python ] && ! py_ok .venv/bin/python; then
   echo "예전 Python으로 만든 설치를 지우고 새로 설치합니다."
@@ -58,8 +60,11 @@ if [ ! -x .venv/bin/python ]; then
   echo "처음 실행: 필요한 프로그램을 설치합니다 (1~3분)…"
   "$PY" -m venv .venv
   .venv/bin/python -m pip install -q --upgrade pip
-  .venv/bin/python -m pip install -q -r hub/requirements.txt
+  .venv/bin/python -m pip install -q -r hub/requirements.txt certifi
 fi
+# Python에 따라(python.org, uv) 인터넷 보안 인증서를 못 찾는 경우가 있어 certifi의 것을 쓰게 합니다.
+SSL_CERT_FILE="$(.venv/bin/python -c 'import certifi; print(certifi.where())' 2>/dev/null || true)"
+[ -n "$SSL_CERT_FILE" ] && export SSL_CERT_FILE || unset SSL_CERT_FILE
 
 if [ "$MODE" != "demo" ] && [ "$MODE" != "player-demo" ]; then
   if [ -f .env ]; then
