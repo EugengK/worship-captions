@@ -32,11 +32,18 @@ def read_text(path: Path) -> str:
 
 
 def split_sentences(text: str) -> list[str]:
+    """Sentences as preached. A manuscript often breaks one sentence over several short lines
+    (for reading aloud), so lines are joined up to a blank line and then split at sentence ends.
+    Verse numbers at the start of a Bible line and markdown bullets are dropped."""
     out = []
-    for para in text.splitlines():
-        para = re.sub(r"^[#>*\-\s]+", "", para).strip()  # markdown headings, bullets
-        if not para:
-            continue
+    for block in re.split(r"\n\s*\n", text):
+        lines = []
+        for line in block.splitlines():
+            line = re.sub(r"^[#>*\-\s]+", "", line).strip()   # markdown headings, bullets
+            line = re.sub(r"^\d{1,3}\.?\s+(?=\S)", "", line)   # "16 주님께서…" / "3. 너희는…" verse numbers
+            if line:
+                lines.append(line)
+        para = " ".join(lines)
         out.extend(s.strip() for s in SENTENCE_END.sub(r"\1\n", para).split("\n") if s.strip())
     return out
 

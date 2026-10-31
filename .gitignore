@@ -11,3 +11,4 @@ player/node_modules/
 player/.ieum/
 *.pptx
 hub/certs/
+private/

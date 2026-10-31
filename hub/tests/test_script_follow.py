@@ -142,6 +142,10 @@ def test_prompt_carries_the_manuscript_hint():
 def test_manuscript_is_split_into_preached_sentences(tmp_path):
     from prepare_script import read_text, split_sentences
     md = tmp_path / "s.md"
-    md.write_text("# 속죄제\n\n오늘은 레위기 4장입니다. 함께 보시죠! 왜 그럴까요?\n“이것이 피니라.” 아멘.\n", encoding="utf-8")
+    md.write_text("# 속죄제\n\n오늘은 레위기 4장입니다. 함께 보시죠! 왜 그럴까요?\n“이것이 피니라.” 아멘.\n\n"
+                  "여러분은 기다리던\n좋은 소식을 들으면\n어떤 표정을 짓게 되나요?\n\n"
+                  "16 주님께서 우리와 함께 가지 않으시면\n", encoding="utf-8")
     assert split_sentences(read_text(md)) == ["속죄제", "오늘은 레위기 4장입니다.", "함께 보시죠!", "왜 그럴까요?",
-                                              "“이것이 피니라.”", "아멘."]
+                                              "“이것이 피니라.”", "아멘.",
+                                              "여러분은 기다리던 좋은 소식을 들으면 어떤 표정을 짓게 되나요?",
+                                              "주님께서 우리와 함께 가지 않으시면"]
