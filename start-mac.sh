@@ -57,10 +57,16 @@ if [ -x .venv/bin/python ] && ! py_ok .venv/bin/python; then
 fi
 
 if [ ! -x .venv/bin/python ]; then
-  echo "처음 실행: 필요한 프로그램을 설치합니다 (1~3분)…"
   "$PY" -m venv .venv
+fi
+# 설치가 끝까지 된 적이 없으면(처음, 또는 지난번 설치 실패) 다시 설치합니다.
+if [ ! -f .venv/.installed ] || [ hub/requirements.txt -nt .venv/.installed ]; then
+  echo "필요한 프로그램을 설치합니다 (1~5분)…"
   .venv/bin/python -m pip install -q --upgrade pip
-  .venv/bin/python -m pip install -q -r hub/requirements.txt certifi
+  # --prefer-binary: 최신판이 이 맥용 완성품(wheel) 없이 나온 부품은 완성품이 있는 조금 앞 판을 씁니다
+  # (예: 인텔 맥에서 cryptography 49+는 직접 조립해야 해서 실패함).
+  .venv/bin/python -m pip install -q --prefer-binary -r hub/requirements.txt certifi
+  touch .venv/.installed
 fi
 # Python에 따라(python.org, uv) 인터넷 보안 인증서를 못 찾는 경우가 있어 certifi의 것을 쓰게 합니다.
 SSL_CERT_FILE="$(.venv/bin/python -c 'import certifi; print(certifi.where())' 2>/dev/null || true)"
