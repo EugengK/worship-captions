@@ -5,7 +5,7 @@
  * While translation is off (hymns, creed, Bible reading) it stays hidden, except for the
  * last sentence or two still arriving in the first seconds after it was switched off.
  * A slide with prepared captions (responsive reading, Bible verses…) shows those for as long as
- * the slide is up, in place of live ones.
+ * the slide is up; if live translation is on there too, live captions take over while they come.
  */
 import React, { useEffect, useRef, useState } from 'react'
 import { Hub, type CaptionLine } from './link'
@@ -63,13 +63,17 @@ export function CaptionBand({
     }
   }, [])
 
-  // Only the languages picked on the presenter screen, in that order
-  const source = fixed ? langs.filter((c) => fixed[c]).map((c) => ({ lang: c, text: fixed[c]! })) : lines
+  // Only the languages picked on the presenter screen, in that order. On a slide with prepared
+  // captions where live translation is also on (the preacher speaks over a Bible verse), a fresh
+  // live caption shows for a few seconds, then the prepared one comes back.
+  const liveNow = translate && visible && lines.length > 0
+  const source =
+    fixed && !liveNow ? langs.filter((c) => fixed[c]).map((c) => ({ lang: c, text: fixed[c]! })) : lines
   const shown = langs.map((c) => source.find((l) => l.lang === c)).filter((l): l is CaptionLine => !!l)
   if (!shown.length) return null
   return (
     <div
-      className={`caption-band n${shown.length}${fixed ? ' fixed' : ''}`}
+      className={`caption-band n${shown.length}${fixed && !liveNow ? ' fixed' : ''}`}
       aria-live="polite"
       style={{ opacity: fixed || visible ? 1 : 0, ['--cap' as string]: scale }}
     >
