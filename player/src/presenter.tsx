@@ -8,6 +8,7 @@ import { createRoot } from 'react-dom/client'
 import { SlideThumb } from 'ieum-slides/SlideThumb'
 import { imageUrls, loadDeck, preloadImages, type PlayerDeck } from './deck'
 import { liveTranslation, mismatchedSlides, parseCaptionFile, translationStates, type CaptionFile } from './markers'
+import { DEFAULT_LIFT } from './CaptionBand'
 import { CHANNEL, Hub, LANGUAGES, MAX_LANGS, NEXT_KEYS, PREV_KEYS, toggleLang, type CaptionLine, type ShowMessage } from './link'
 import './player.css'
 
@@ -51,6 +52,15 @@ function Presenter() {
     }
   })
   const [black, setBlack] = useState(false)
+  // Caption band height above the screen's bottom edge (% of height), kept between services
+  const [capLift, setCapLift] = useState(() => {
+    try {
+      const v = localStorage.getItem('worshipPlayer.capLift')
+      return v === null ? DEFAULT_LIFT : Number(v)
+    } catch {
+      return DEFAULT_LIFT
+    }
+  })
   // Caption text size on the projector (1 = default), kept between services
   const [capScale, setCapScale] = useState(() => {
     try {
@@ -156,13 +166,15 @@ function Presenter() {
       else if (key === 't' || key === 'T') setTranslate((t) => !t)
       else if (key === '+' || key === '=') setCapScale((v) => Math.min(2, Math.round((v + 0.1) * 10) / 10))
       else if (key === '-' || key === '_') setCapScale((v) => Math.max(0.6, Math.round((v - 0.1) * 10) / 10))
+      else if (key === ']') setCapLift((v) => Math.min(40, v + 2))
+      else if (key === '[') setCapLift((v) => Math.max(0, v - 2))
     },
     [go, index, deck],
   )
 
   const fixed = captions?.slides.get(index + 1) ?? null
   const live = deck ? liveTranslation(translate, markers[index] ?? null, !!fixed) : false
-  const show: ShowMessage = { type: 'state', index, translate: live, black, langs, fixed, scale: capScale }
+  const show: ShowMessage = { type: 'state', index, translate: live, black, langs, fixed, scale: capScale, lift: capLift }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -182,7 +194,15 @@ function Presenter() {
   useEffect(() => {
     channel.postMessage(show)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel, index, live, black, langs, fixed, capScale])
+  }, [channel, index, live, black, langs, fixed, capScale, capLift])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('worshipPlayer.capLift', String(capLift))
+    } catch {
+      /* not remembered in private mode */
+    }
+  }, [capLift])
 
   // Congregation phones get the prepared captions too (they hear and read them in their language)
   useEffect(() => {
@@ -350,6 +370,11 @@ function Presenter() {
           <b>{Math.round(capScale * 100)}%</b>
           <button onClick={() => handleKey('+')}>A+</button>
         </span>
+        <span className="cap-size" title="프로젝터 자막 위치 ([ / ] 키)">
+          자막 위치
+          <button onClick={() => handleKey('[')}>▼</button>
+          <button onClick={() => handleKey(']')}>▲</button>
+        </span>
         <span className={hubUp ? 'dot up' : 'dot down'} title="자막 서버 (caption_hub.py)">
           {hubUp ? '자막 서버 연결됨' : '자막 서버 없음'}
         </span>
@@ -386,7 +411,7 @@ function Presenter() {
                 ? lastCaption.map((l, i) => <div key={i}>{l.text}</div>)
                 : '(아직 없음)'}
           </div>
-          <div className="keys">→ / ← 넘기기 · T 번역 켜기/끄기 · B 화면 가림 · −/+ 자막 글씨 · Home/End 처음/끝</div>
+          <div className="keys">→ / ← 넘기기 · T 번역 켜기/끄기 · B 화면 가림 · −/+ 자막 글씨 · [ / ] 자막 위치 · Home/End 처음/끝</div>
         </aside>
       </main>
       <div className="strip" ref={stripRef}>

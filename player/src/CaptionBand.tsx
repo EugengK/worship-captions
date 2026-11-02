@@ -12,17 +12,21 @@ import { Hub, type CaptionLine } from './link'
 
 const HIDE_AFTER_MS = 8000
 const GRACE_AFTER_OFF_MS = 6000
+/** Projectors often cut off the screen's edges, so the band sits above the bottom by default (% of height) */
+export const DEFAULT_LIFT = 8
 
 export function CaptionBand({
   translate,
   langs,
   fixed,
   scale = 1,
+  lift = DEFAULT_LIFT,
 }: {
   translate: boolean
   langs: string[]
   fixed: Record<string, string> | null
   scale?: number
+  lift?: number
 }): React.ReactElement | null {
   const [lines, setLines] = useState<CaptionLine[]>([])
   const [visible, setVisible] = useState(false)
@@ -75,7 +79,7 @@ export function CaptionBand({
     <div
       className={`caption-band n${shown.length}${fixed && !liveNow ? ' fixed' : ''}`}
       aria-live="polite"
-      style={{ opacity: fixed || visible ? 1 : 0, ['--cap' as string]: scale }}
+      style={{ opacity: fixed || visible ? 1 : 0, ['--cap' as string]: scale, bottom: `${lift}vh` }}
     >
       {shown.map((l, i) => (
         <div key={i} lang={l.lang} className={i === 0 ? 'caption-first' : 'caption-second'}>

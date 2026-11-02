@@ -29,6 +29,8 @@ export type ShowMessage =
       fixed: Record<string, string> | null
       /** Caption text size, 1 = default */
       scale: number
+      /** Caption band's distance from the bottom of the screen, in % of its height */
+      lift: number
     }
   | { type: 'key'; key: string }
 
