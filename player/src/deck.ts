@@ -1,14 +1,14 @@
 /**
  * Opens a .pptx in the browser with IeumOffice's engine and prepares everything the
  * presenter and audience windows draw: render trees, image URLs, embedded fonts,
- * audio clips and the [번역 ON]/[번역 OFF] notes markers.
+ * audio and video clips and the [번역 ON]/[번역 OFF] notes markers.
  */
 import { openPptx, getSlideNotes, listEmbeddedFonts } from '@genoffice/pptx-engine'
 import type { EmbeddedFontFace } from '@genoffice/pptx-engine'
 import { buildRenderSlide } from '@genoffice/pptx-render'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { CanvasMetrics, registerFonts } from './fonts'
-import { autoplayIds, notesMarker, translationStates } from './markers'
+import { autoplayIds, mediaVolume, notesMarker, translationStates } from './markers'
 
 /** Width the slides are laid out at; screens scale this up or down. */
 export const RENDER_WIDTH = 1920
@@ -21,6 +21,17 @@ export interface AudioClip {
   autoplay: boolean
 }
 
+export interface VideoClip {
+  sourceId: string
+  url: string
+  /** PowerPoint starts it by itself on entering the slide; otherwise the first "next" starts it */
+  autoplay: boolean
+  /** Where the video sits, in % of the slide's width/height */
+  box: { left: number; top: number; width: number; height: number }
+  /** Volume from the slide's timing (PowerPoint's vol, 0–1) */
+  volume: number
+}
+
 export interface PlayerSlide {
   no: number
   render: RenderSlide
@@ -30,6 +41,7 @@ export interface PlayerSlide {
   /** Translation state on this slide after carrying markers forward */
   translate: boolean
   audio: AudioClip[]
+  video: VideoClip[]
   /** Slide's first line of text, for the slide list */
   title: string
 }
@@ -46,6 +58,22 @@ const MIME: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp',
   svg: 'image/svg+xml', webp: 'image/webp', tif: 'image/tiff', tiff: 'image/tiff',
   mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', mp4: 'video/mp4', mov: 'video/quicktime',
+}
+
+/**
+ * PowerPoint's shape id of an element (its <p:cNvPr id>), which the slide timing refers to.
+ * The engine gives elements its own ids, so the shape is found by its name in the slide XML.
+ */
+export function shapeId(el: { nvId?: string; name?: string }, slideXml: string): string {
+  if (el.nvId) return el.nvId
+  const unescape = (t: string) =>
+    t.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+  for (const m of slideXml.matchAll(/<p:cNvPr\b([^>]*)>/g)) {
+    const id = m[1]!.match(/\bid="(\d+)"/)?.[1]
+    const name = m[1]!.match(/\bname="([^"]*)"/)?.[1]
+    if (id && name != null && unescape(name) === el.name) return id
+  }
+  return ''
 }
 
 function firstText(elements: any[]): string {
@@ -84,13 +112,34 @@ export async function loadDeck(file: File, onProgress: (msg: string) => void): P
     const notes = getSlideNotes(opened.archive, slide.path)
     const auto = autoplayIds(slide.originalXml)
     const audio: AudioClip[] = []
+    const video: VideoClip[] = []
     for (const el of slide.elements as any[]) {
-      if (el.type !== 'picture' || el.media?.kind !== 'audio' || !el.media.target || el.media.external) continue
+      if (el.type !== 'picture' || !el.media?.target || el.media.external) continue
       const url = media(el.media.target)
-      // Element ids look like "pic_2"; the number is the shape id the timing XML targets
-      if (url) audio.push({ sourceId: el.id, url, autoplay: auto.has(String(el.id).match(/(\d+)$/)?.[1] ?? '') })
+      if (!url) continue
+      // The timing XML targets the shape id (<p:cNvPr id>), not the engine's element id
+      const spid = shapeId(el, slide.originalXml)
+      if (el.media.kind === 'audio') {
+        audio.push({ sourceId: el.id, url, autoplay: auto.has(spid) })
+      } else if (el.media.kind === 'video') {
+        const node: any = render.nodes.find((n: any) => n.sourceId === el.id)
+        if (!node?.box) continue
+        const b = node.box
+        video.push({
+          sourceId: el.id,
+          url,
+          autoplay: auto.has(spid),
+          box: {
+            left: (b.x / render.widthPx) * 100,
+            top: (b.y / render.heightPx) * 100,
+            width: (b.w / render.widthPx) * 100,
+            height: (b.h / render.heightPx) * 100,
+          },
+          volume: mediaVolume(slide.originalXml, spid),
+        })
+      }
     }
-    return { no: i + 1, render, notes, marker: notesMarker(notes), audio, title: firstText(slide.elements) }
+    return { no: i + 1, render, notes, marker: notesMarker(notes), audio, video, title: firstText(slide.elements) }
   })
   const states = translationStates(raw.map((s) => s.marker))
   return {

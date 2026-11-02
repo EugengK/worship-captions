@@ -2,20 +2,96 @@
  * Projector window: the current slide, as large as the screen allows, with the caption band.
  * Opened by the presenter window, which owns the deck; this window only draws.
  */
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { SlideThumb } from 'ieum-slides/SlideThumb'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { CaptionBand } from './CaptionBand'
-import { imageUrls, preloadImages, type PlayerDeck } from './deck'
+import { imageUrls, preloadImages, type PlayerDeck, type VideoClip } from './deck'
 import { registerFonts } from './fonts'
-import { CHANNEL, type ShowMessage } from './link'
+import { CHANNEL, type ShowMessage, type VideoCommand } from './link'
 import './player.css'
 
 /** The speaker icon of an audio clip is not shown on the projector (PowerPoint hides it too). */
 function withoutAudioIcons(r: RenderSlide): RenderSlide {
   const nodes = r.nodes.filter((n: any) => !(n.type === 'picture' && n.media === 'audio'))
   return nodes.length === r.nodes.length ? r : { ...r, nodes }
+}
+
+/**
+ * Videos of the slide on screen, laid over their poster frame. Hidden until started; after the end
+ * the last frame stays (as in PowerPoint). Sound comes from this window. If the browser blocks
+ * sound (no click in this window yet), the video plays muted and the presenter is told.
+ */
+function SlideVideos({
+  clips, cmd, slide, channel,
+}: { clips: VideoClip[]; cmd: VideoCommand | null; slide: number; channel: BroadcastChannel }) {
+  const refs = useRef(new Map<string, HTMLVideoElement>())
+  const [shown, setShown] = useState(new Set<string>())
+
+  const report = (v: HTMLVideoElement, url: string) =>
+    channel.postMessage({
+      type: 'video-status', url, playing: !v.paused && !v.ended, time: v.currentTime,
+      duration: Number.isFinite(v.duration) ? v.duration : 0, ended: v.ended, muted: v.muted,
+    } satisfies ShowMessage)
+
+  useEffect(() => {
+    if (!cmd || cmd.slide !== slide) return
+    const v = refs.current.get(cmd.url)
+    if (!v) return
+    if (cmd.action === 'pause') {
+      v.pause()
+      return
+    }
+    if (cmd.action === 'start') v.currentTime = 0
+    setShown((s) => new Set(s).add(cmd.url))
+    v.muted = false
+    v.play().catch((e) => {
+      if ((e as DOMException)?.name !== 'NotAllowedError') return
+      v.muted = true
+      void v.play().catch(() => {})
+      report(v, cmd.url)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cmd?.seq])
+
+  // A click in this window lets the browser play sound: unmute a video that had to start muted
+  useEffect(() => {
+    const on = () => {
+      for (const [url, v] of refs.current) if (v.muted && !v.paused) { v.muted = false; report(v, url) }
+    }
+    window.addEventListener('pointerdown', on)
+    return () => window.removeEventListener('pointerdown', on)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return (
+    <>
+      {clips.map((c) => (
+        <video
+          key={c.url}
+          ref={(el) => {
+            if (el) {
+              el.volume = c.volume
+              refs.current.set(c.url, el)
+            } else refs.current.delete(c.url)
+          }}
+          src={c.url}
+          preload="auto"
+          playsInline
+          style={{
+            left: `${c.box.left}%`, top: `${c.box.top}%`, width: `${c.box.width}%`, height: `${c.box.height}%`,
+            visibility: shown.has(c.url) ? 'visible' : 'hidden',
+          }}
+          onTimeUpdate={(e) => report(e.currentTarget, c.url)}
+          onPlay={(e) => report(e.currentTarget, c.url)}
+          onPause={(e) => report(e.currentTarget, c.url)}
+          onEnded={(e) => report(e.currentTarget, c.url)}
+          onLoadedMetadata={(e) => report(e.currentTarget, c.url)}
+        />
+      ))}
+    </>
+  )
 }
 
 function useWindowSize() {
@@ -32,7 +108,7 @@ function Audience() {
   const [deck, setDeck] = useState<PlayerDeck | null>(null)
   const [images, setImages] = useState(new Map<string, HTMLImageElement>())
   const [state, setState] = useState<Omit<Extract<ShowMessage, { type: 'state' }>, 'type'>>({
-    index: 0, translate: false, black: false, langs: ['en'], fixed: null, scale: 1, lift: 8,
+    index: 0, translate: false, black: false, langs: ['en'], fixed: null, scale: 1, lift: 8, video: null,
   })
   const [fullscreen, setFullscreen] = useState(false)
   const { w, h } = useWindowSize()
@@ -93,6 +169,10 @@ function Audience() {
       {!fullscreen && <div className="fs-hint">화면을 한 번 누르면 전체 화면이 됩니다 (F 키도 가능)</div>}
       <div className="audience-slide" style={{ width, visibility: state.black ? 'hidden' : 'visible' }}>
         <SlideThumb slide={render} images={images} width={width} />
+        {/* keyed by slide: leaving the slide removes its videos, which stops them */}
+        {slide!.video.length > 0 && (
+          <SlideVideos key={state.index} clips={slide!.video} cmd={state.video} slide={state.index} channel={channel} />
+        )}
       </div>
       <CaptionBand translate={state.translate} langs={state.langs} fixed={state.fixed} scale={state.scale} lift={state.lift} />
     </div>

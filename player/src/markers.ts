@@ -35,6 +35,16 @@ export function autoplayIds(slideXml: string): Set<string> {
   return ids
 }
 
+/** Volume PowerPoint plays a clip at (p:cMediaNode vol, 100000 = full); 1 when not set. */
+export function mediaVolume(slideXml: string, spid: string): number {
+  const re = /<p:cMediaNode\b([^>]*)>[\s\S]*?<\/p:cMediaNode>/g
+  for (const m of slideXml.matchAll(re)) {
+    if (!m[0].includes(`<p:spTgt spid="${spid}"`)) continue
+    const vol = m[1]!.match(/vol="(\d+)"/)?.[1]
+    return vol ? Math.max(0, Math.min(1, Number(vol) / 100000)) : 1
+  }
+  return 1
+}
 
 /** Prepared captions for one slide: language code → text (may hold line breaks). */
 export type FixedCaption = Record<string, string>

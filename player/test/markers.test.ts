@@ -48,3 +48,14 @@ test('caption file can switch live translation per slide', async () => {
   const markers = [1, 2, 3, 4, 5].map((no) => f.live.get(no) ?? null)
   assert.deepEqual(translationStates(markers), [false, false, false, true, true])
 })
+
+test('video volume and click-to-play from the slide timing', async () => {
+  const { mediaVolume } = await import('../src/markers.ts')
+  // As PowerPoint wrote it for the 2026-11-01 children's talk video (shape id 3)
+  const xml =
+    '<p:cTn id="5" presetID="1" presetClass="mediacall" presetSubtype="0" fill="hold" nodeType="clickEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:cmd type="call" cmd="playFrom(0.0)"><p:cBhvr><p:cTn id="6" dur="99221" fill="hold"/><p:tgtEl><p:spTgt spid="3"/></p:tgtEl></p:cBhvr></p:cmd></p:childTnLst></p:cTn>' +
+    '<p:video><p:cMediaNode vol="80000"><p:cTn id="7" fill="hold" display="0"><p:stCondLst><p:cond delay="indefinite"/></p:stCondLst></p:cTn><p:tgtEl><p:spTgt spid="3"/></p:tgtEl></p:cMediaNode></p:video>'
+  assert.equal(mediaVolume(xml, '3'), 0.8)
+  assert.equal(mediaVolume(xml, '9'), 1)
+  assert.deepEqual([...autoplayIds(xml)], []) // starts on a click, not by itself
+})

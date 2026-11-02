@@ -31,8 +31,20 @@ export type ShowMessage =
       scale: number
       /** Caption band's distance from the bottom of the screen, in % of its height */
       lift: number
+      /** Latest command for a video on this slide (seq tells a repeat from a new one) */
+      video: VideoCommand | null
     }
   | { type: 'key'; key: string }
+  /** Audience → presenter: how the video on screen is doing */
+  | { type: 'video-status'; url: string; playing: boolean; time: number; duration: number; ended: boolean; muted: boolean }
+
+export interface VideoCommand {
+  /** Slide index the command belongs to (ignored once another slide is up) */
+  slide: number
+  url: string
+  action: 'start' | 'pause' | 'resume'
+  seq: number
+}
 
 export const CHANNEL = 'worship-player'
 

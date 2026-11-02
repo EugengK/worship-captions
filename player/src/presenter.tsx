@@ -1,6 +1,6 @@
 /**
  * Presenter window (on the laptop): opens the worship .pptx, shows the current and next slide,
- * moves with ←/→ or a clicker, drives the projector window, plays the deck's audio and turns
+ * moves with ←/→ or a clicker, drives the projector window, plays the deck's audio and video and turns
  * live translation on and off from the [번역 ON]/[번역 OFF] markers in the slide notes.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -9,7 +9,7 @@ import { SlideThumb } from 'ieum-slides/SlideThumb'
 import { imageUrls, loadDeck, preloadImages, type PlayerDeck } from './deck'
 import { liveTranslation, mismatchedSlides, parseCaptionFile, translationStates, type CaptionFile } from './markers'
 import { DEFAULT_LIFT } from './CaptionBand'
-import { CHANNEL, Hub, LANGUAGES, MAX_LANGS, NEXT_KEYS, PREV_KEYS, toggleLang, type CaptionLine, type ShowMessage } from './link'
+import { CHANNEL, Hub, LANGUAGES, MAX_LANGS, NEXT_KEYS, PREV_KEYS, toggleLang, type CaptionLine, type ShowMessage, type VideoCommand } from './link'
 import './player.css'
 
 declare global {
@@ -72,6 +72,10 @@ function Presenter() {
   const [hubUp, setHubUp] = useState(false)
   const [lastCaption, setLastCaption] = useState<CaptionLine[]>([])
   const [playing, setPlaying] = useState<string | null>(null)
+  // Videos play in the projector window (picture and sound); the presenter sends commands
+  const [videoCmd, setVideoCmd] = useState<VideoCommand | null>(null)
+  const [videoStatus, setVideoStatus] = useState<Extract<ShowMessage, { type: 'video-status' }> | null>(null)
+  const videoSeq = useRef(0)
   const audience = useRef<Window | null>(null)
   const audio = useRef(new Map<string, HTMLAudioElement>())
   const channel = useMemo(() => new BroadcastChannel(CHANNEL), [])
@@ -156,9 +160,19 @@ function Presenter() {
     [deck, index, markers, carried],
   )
 
+  const videoAction = useCallback(
+    (url: string, action: VideoCommand['action']) => setVideoCmd({ slide: index, url, action, seq: ++videoSeq.current }),
+    [index],
+  )
+
   const handleKey = useCallback(
     (key: string) => {
-      if (NEXT_KEYS.has(key)) go(index + 1)
+      if (NEXT_KEYS.has(key)) {
+        // Like PowerPoint: on a slide with a click-to-play video the first "next" starts it
+        const v = deck?.slides[index]?.video.find((c) => !c.autoplay)
+        if (v && !(videoCmd?.slide === index && videoCmd.url === v.url)) videoAction(v.url, 'start')
+        else go(index + 1)
+      }
       else if (PREV_KEYS.has(key)) go(index - 1)
       else if (key === 'Home') go(0)
       else if (key === 'End' && deck) go(deck.slides.length - 1)
@@ -169,12 +183,14 @@ function Presenter() {
       else if (key === ']') setCapLift((v) => Math.min(40, v + 2))
       else if (key === '[') setCapLift((v) => Math.max(0, v - 2))
     },
-    [go, index, deck],
+    [go, index, deck, videoCmd, videoAction],
   )
 
   const fixed = captions?.slides.get(index + 1) ?? null
   const live = deck ? liveTranslation(translate, markers[index] ?? null, !!fixed) : false
-  const show: ShowMessage = { type: 'state', index, translate: live, black, langs, fixed, scale: capScale, lift: capLift }
+  const show: ShowMessage = {
+    type: 'state', index, translate: live, black, langs, fixed, scale: capScale, lift: capLift, video: videoCmd,
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -186,6 +202,7 @@ function Presenter() {
     channel.onmessage = (ev: MessageEvent<ShowMessage>) => {
       if (ev.data.type === 'key') handleKey(ev.data.key)
       else if (ev.data.type === 'hello') channel.postMessage(show)
+      else if (ev.data.type === 'video-status') setVideoStatus(ev.data)
     }
     return () => window.removeEventListener('keydown', onKey)
   }, [handleKey, channel, show])
@@ -194,7 +211,7 @@ function Presenter() {
   useEffect(() => {
     channel.postMessage(show)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel, index, live, black, langs, fixed, capScale, capLift])
+  }, [channel, index, live, black, langs, fixed, capScale, capLift, videoCmd])
 
   useEffect(() => {
     try {
@@ -240,6 +257,9 @@ function Presenter() {
     for (const a of audio.current.values()) a.pause()
     setPlaying(null)
     const s = deck?.slides[index]
+    setVideoStatus(null)
+    const v = s?.video.find((c) => c.autoplay)
+    setVideoCmd(v ? { slide: index, url: v.url, action: 'start', seq: ++videoSeq.current } : null)
     for (const clip of s?.audio ?? []) {
       if (!clip.autoplay) continue
       const a = audioFor(clip.url)
@@ -401,6 +421,29 @@ function Presenter() {
               {c.autoplay ? ' (자동 재생 슬라이드)' : ''}
             </button>
           ))}
+          {slide.video.map((c) => {
+            const st = videoStatus?.url === c.url ? videoStatus : null
+            const started = videoCmd?.slide === index && videoCmd.url === c.url
+            const mmss = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`
+            return (
+              <div key={c.url} className="video-ctl">
+                <button
+                  className="audio"
+                  onClick={() => videoAction(c.url, !started || st?.ended ? 'start' : st?.playing ? 'pause' : 'resume')}
+                >
+                  {!started || st?.ended ? '▶ 영상 재생' : st?.playing ? '❚❚ 영상 일시정지' : '▶ 영상 이어서 재생'}
+                  {c.autoplay ? ' (자동 재생)' : ' (→ 키로도 시작)'}
+                </button>
+                {started && st && (
+                  <span className="video-time">
+                    {mmss(st.time)} / {mmss(st.duration || 0)}
+                    {st.ended ? ' · 끝남 (→ 다음 슬라이드)' : ''}
+                  </span>
+                )}
+                {st?.muted && <div className="warn">소리가 막혔습니다. 프로젝터 화면을 마우스로 한 번 눌러 주세요.</div>}
+              </div>
+            )
+          })}
           <div className="label">노트</div>
           <div className="notes">{slide.notes || '(노트 없음)'}</div>
           <div className="label">{fixed ? '준비된 자막 (이 슬라이드)' : '최근 자막'}</div>
