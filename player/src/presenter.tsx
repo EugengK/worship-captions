@@ -286,6 +286,13 @@ function Presenter() {
     }
   }
 
+  // Closing (or reloading) this window closes the projector window too, so nobody has to find it
+  useEffect(() => {
+    const close = () => audience.current?.close()
+    window.addEventListener('pagehide', close)
+    return () => window.removeEventListener('pagehide', close)
+  }, [])
+
   // Opens the projector window. In Chrome, with the "window management" permission (asked once),
   // it lands on the other screen at full size and asks for fullscreen; anywhere else the window
   // opens normally and one click inside it makes it fullscreen.

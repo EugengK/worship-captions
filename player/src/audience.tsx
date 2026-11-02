@@ -139,6 +139,10 @@ function Audience() {
       channel.postMessage({ type: 'key', key: e.key } satisfies ShowMessage)
     }
     window.addEventListener('keydown', onKey)
+    // Safety net: if the presenter window is gone (closed, crashed), close this one as well
+    const watch = window.setInterval(() => {
+      if (!window.opener || window.opener.closed) window.close()
+    }, 1000)
     // A fullscreen popup (Chrome) fills the screen without document fullscreen; count it too
     const onResize = () =>
       setFullscreen(!!document.fullscreenElement || (window.innerWidth >= screen.width && window.innerHeight >= screen.height))
@@ -146,6 +150,7 @@ function Audience() {
     window.addEventListener('resize', onResize)
     document.addEventListener('fullscreenchange', onResize)
     return () => {
+      window.clearInterval(watch)
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('resize', onResize)
       document.removeEventListener('fullscreenchange', onResize)
