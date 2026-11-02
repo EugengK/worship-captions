@@ -9,7 +9,7 @@ import type { RenderSlide } from '@genoffice/pptx-render'
 import { CaptionBand } from './CaptionBand'
 import { imageUrls, preloadImages, type PlayerDeck, type VideoClip } from './deck'
 import { registerFonts } from './fonts'
-import { CHANNEL, type ShowMessage, type VideoCommand } from './link'
+import { CHANNEL, LAN_URL, type ShowMessage, type VideoCommand } from './link'
 import './player.css'
 
 /** The speaker icon of an audio clip is not shown on the projector (PowerPoint hides it too). */
@@ -108,7 +108,7 @@ function Audience() {
   const [deck, setDeck] = useState<PlayerDeck | null>(null)
   const [images, setImages] = useState(new Map<string, HTMLImageElement>())
   const [state, setState] = useState<Omit<Extract<ShowMessage, { type: 'state' }>, 'type'>>({
-    index: 0, translate: false, black: false, langs: ['en'], fixed: null, scale: 1, lift: 8, video: null,
+    index: 0, translate: false, black: false, langs: ['en'], fixed: null, scale: 1, lift: 8, video: null, qr: false,
   })
   const [fullscreen, setFullscreen] = useState(false)
   const { w, h } = useWindowSize()
@@ -179,6 +179,7 @@ function Audience() {
           <SlideVideos key={state.index} clips={slide!.video} cmd={state.video} slide={state.index} channel={channel} />
         )}
       </div>
+      {state.qr && <iframe className="qr-overlay" src={`${LAN_URL}/qr`} title="통역 QR" />}
       <CaptionBand translate={state.translate} langs={state.langs} fixed={state.fixed} scale={state.scale} lift={state.lift} />
     </div>
   )

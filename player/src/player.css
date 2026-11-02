@@ -75,3 +75,4 @@ button { font: inherit; cursor: pointer; }
 .presenter .video-time { font-size: 13px; color: #bbb; }
 .audience-slide { position: relative; }
 .audience-slide video { position: absolute; object-fit: fill; }
+.qr-overlay { position: fixed; inset: 0; width: 100vw; height: 100vh; border: 0; background: #fff; z-index: 20; pointer-events: none; }

@@ -205,6 +205,7 @@ class PhoneMic:
                      ip, self.port, name, self.port)
             log.info("경고('비공개 연결이 아닙니다')가 뜨면: '자세히 보기' → '이 웹 사이트 방문'. "
                      "아예 안 뜨게 하려면 아이폰에서 http://%s:8000/ca 를 열어 인증서를 한 번 설치하세요 "
+                     "(맥 Chrome에서 http://localhost:8000/connect 를 열면 QR로 찍을 수 있음) "
                      "(맥에서 예배 모드가 켜져 있을 때).", ip)
             await asyncio.Future()
 

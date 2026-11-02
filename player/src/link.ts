@@ -33,6 +33,8 @@ export type ShowMessage =
       lift: number
       /** Latest command for a video on this slide (seq tells a repeat from a new one) */
       video: VideoCommand | null
+      /** Show the "live interpretation" QR code over the slide (Q key) */
+      qr: boolean
     }
   | { type: 'key'; key: string }
   /** Audience → presenter: how the video on screen is doing */
@@ -65,6 +67,15 @@ export function toggleLang(langs: string[], code: string): string[] {
   const next = on ? langs.filter((c) => c !== code) : [...langs, code]
   return LANGUAGES.map((l) => l.code).filter((c) => c === 'en' || next.includes(c))
 }
+/** The hub's Wi-Fi pages for phones (start-mac.sh runs them on port 8000). */
+export const LAN_URL = (() => {
+  try {
+    return new URLSearchParams(location.search).get('lan') || 'http://localhost:8000'
+  } catch {
+    return 'http://localhost:8000'
+  }
+})()
+
 export const HUB_URL = (() => {
   try {
     return new URLSearchParams(location.search).get('hub') || localStorage.getItem('worshipCaptions.url') || 'ws://localhost:8765'

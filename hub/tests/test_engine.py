@@ -299,6 +299,9 @@ def test_phones_add_their_language_and_cannot_send_captions():
             import urllib.request
             page = await asyncio.to_thread(lambda: urllib.request.urlopen(f"http://localhost:{lan}/").read().decode())
             qr = await asyncio.to_thread(lambda: urllib.request.urlopen(f"http://localhost:{lan}/qr").read().decode())
+            svg = await asyncio.to_thread(lambda: urllib.request.urlopen(f"http://localhost:{lan}/qr.svg").read().decode())
+            conn = await asyncio.to_thread(lambda: urllib.request.urlopen(f"http://localhost:{lan}/connect").read().decode())
+            assert svg.startswith("<svg") and conn.count("<svg") == 3 and ":8443/" in conn and "/ca" in conn
             async with websockets.connect(f"ws://localhost:{port}") as engine, \
                     websockets.connect(f"ws://localhost:{lan}/ws") as phone:
                 await phone.send(json.dumps({"type": "listen", "lang": "th"}))

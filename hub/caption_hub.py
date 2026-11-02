@@ -174,8 +174,7 @@ def page(body: bytes, ctype: str = "text/html; charset=utf-8") -> Response:
 
 
 def qr_page(url: str) -> bytes:
-    import segno
-    svg = segno.make(url, error="m").svg_inline(scale=12, dark="#000", light="#fff")
+    svg = qr_svg(url)
     return f"""<!doctype html><meta charset="utf-8"><title>통역 듣기 QR</title>
 <body style="margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
 background:#fff;font:28px -apple-system,'Apple SD Gothic Neo',sans-serif;gap:24px;text-align:center">
@@ -186,6 +185,38 @@ background:#fff;font:28px -apple-system,'Apple SD Gothic Neo',sans-serif;gap:24p
 </body>""".encode("utf-8")
 
 
+def qr_svg(url: str, scale: int = 12) -> str:
+    import segno
+    return segno.make(url, error="m").svg_inline(scale=scale, dark="#000", light="#fff")
+
+
+def connect_page(url: str) -> bytes:
+    """Everything a phone needs, as QR codes: the congregation page, the preacher's microphone page
+    and, once per microphone phone, this Mac's certificate (so the browser stops warning)."""
+    host = url.split("//", 1)[1].split(":", 1)[0]
+    mic = f"https://{host}:8443/"
+    ca = f"{url}ca"
+    card = lambda title, link, note, scale=8: f"""<section><h2>{title}</h2>{qr_svg(link, scale)}
+<div class="url">{link}</div><div class="note">{note}</div></section>"""
+    return f"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>휴대폰 연결</title><style>
+body{{margin:0;padding:24px;background:#fff;color:#111;font:18px -apple-system,'Apple SD Gothic Neo',sans-serif}}
+h1{{margin:0 0 16px;font-size:28px}} main{{display:flex;flex-wrap:wrap;gap:24px}}
+section{{flex:1 1 300px;border:2px solid #ddd;border-radius:14px;padding:18px;text-align:center}}
+section svg{{width:100%;max-width:300px;height:auto}} h2{{margin:0 0 10px;font-size:22px}}
+.url{{font:600 18px ui-monospace,Menlo,monospace;word-break:break-all;margin:8px 0}}
+.note{{color:#444;font-size:16px;text-align:left;line-height:1.5}} ol{{margin:6px 0 0;padding-left:22px}}
+</style><h1>휴대폰 연결 (같은 교회 Wi-Fi에서 카메라로 찍기)</h1><main>
+{card("① 성도: 실시간 통역 듣기", url, "언어를 고르고 ▶ 누르기. 프로젝터에 띄울 때는 발표기에서 <b>Q</b> 키.")}
+{card("② 설교자: 휴대폰 마이크", mic, "맥이 '휴대폰 마이크' 모드로 켜져 있을 때만 열립니다. 경고가 뜨면 먼저 ③을 한 번 하세요.")}
+{card("③ 마이크 휴대폰에 처음 한 번: 인증서 설치", ca, """아이폰 <b>Safari</b>에서 (카메라로 찍으면 보통 Safari로 열림. 다른 앱으로 열리면 Safari에 주소를 직접 입력):
+<ol><li>'구성 프로파일을 다운로드' → <b>허용</b></li>
+<li>설정 앱 맨 위 <b>프로파일이 다운로드됨</b> → <b>설치</b></li>
+<li>설정 → 일반 → 정보 → 맨 아래 <b>인증서 신뢰 설정</b> → <b>Hobart Korean Church worship Mac</b> 켜기</li></ol>
+그 뒤로는 ②가 경고 없이 바로 열립니다 (Safari·Chrome 모두).""")}
+</main>""".encode("utf-8")
+
+
 def make_router(url: str):
     def route(connection, request):
         if request.path.startswith("/ws"):
@@ -194,6 +225,11 @@ def make_router(url: str):
             return page(LISTENER_PAGE.read_bytes())
         if request.path == "/qr":
             return page(qr_page(url))
+        if request.path == "/qr.svg":
+            # For the worship player's projector overlay (Q key)
+            return page(qr_svg(url, 16).encode("utf-8"), "image/svg+xml")
+        if request.path == "/connect":
+            return page(connect_page(url))
         if request.path == "/ca":
             # This Mac's own certificate authority, for the preacher's phone (phone_mic.py)
             from phone_mic import ensure_ca
@@ -234,6 +270,7 @@ async def main() -> None:
             url = f"http://{lan_ip()}:{args.lan_port}/"
             await serve(listener_handler, "0.0.0.0", args.lan_port, process_request=make_router(url))
             log.info("성도 휴대폰 통역 페이지: %s   (QR 화면: %sqr)", url, url)
+            log.info("휴대폰 연결 QR 모음(통역·마이크·인증서): http://localhost:%d/connect", args.lan_port)
         if args.demo:
             await demo_loop()
         else:

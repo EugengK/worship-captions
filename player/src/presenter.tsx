@@ -9,7 +9,7 @@ import { SlideThumb } from 'ieum-slides/SlideThumb'
 import { imageUrls, loadDeck, preloadImages, type PlayerDeck } from './deck'
 import { liveTranslation, mismatchedSlides, parseCaptionFile, translationStates, type CaptionFile } from './markers'
 import { DEFAULT_LIFT } from './CaptionBand'
-import { CHANNEL, Hub, LANGUAGES, MAX_LANGS, NEXT_KEYS, PREV_KEYS, toggleLang, type CaptionLine, type ShowMessage, type VideoCommand } from './link'
+import { CHANNEL, Hub, LANGUAGES, MAX_LANGS, NEXT_KEYS, PREV_KEYS, toggleLang, LAN_URL, type CaptionLine, type ShowMessage, type VideoCommand } from './link'
 import './player.css'
 
 declare global {
@@ -52,6 +52,7 @@ function Presenter() {
     }
   })
   const [black, setBlack] = useState(false)
+  const [qr, setQr] = useState(false)
   // Caption band height above the screen's bottom edge (% of height), kept between services
   const [capLift, setCapLift] = useState(() => {
     try {
@@ -177,6 +178,7 @@ function Presenter() {
       else if (key === 'Home') go(0)
       else if (key === 'End' && deck) go(deck.slides.length - 1)
       else if (key === 'b' || key === 'B' || key === '.') setBlack((b) => !b)
+      else if (key === 'q' || key === 'Q') setQr((v) => !v)
       else if (key === 't' || key === 'T') setTranslate((t) => !t)
       else if (key === '+' || key === '=') setCapScale((v) => Math.min(2, Math.round((v + 0.1) * 10) / 10))
       else if (key === '-' || key === '_') setCapScale((v) => Math.max(0.6, Math.round((v - 0.1) * 10) / 10))
@@ -189,7 +191,7 @@ function Presenter() {
   const fixed = captions?.slides.get(index + 1) ?? null
   const live = deck ? liveTranslation(translate, markers[index] ?? null, !!fixed) : false
   const show: ShowMessage = {
-    type: 'state', index, translate: live, black, langs, fixed, scale: capScale, lift: capLift, video: videoCmd,
+    type: 'state', index, translate: live, black, langs, fixed, scale: capScale, lift: capLift, video: videoCmd, qr,
   }
 
   useEffect(() => {
@@ -211,7 +213,7 @@ function Presenter() {
   useEffect(() => {
     channel.postMessage(show)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel, index, live, black, langs, fixed, capScale, capLift, videoCmd])
+  }, [channel, index, live, black, langs, fixed, capScale, capLift, videoCmd, qr])
 
   useEffect(() => {
     try {
@@ -362,6 +364,12 @@ function Presenter() {
         <strong>예배 발표기</strong>
         <span className="file">{deck.name}</span>
         <button onClick={() => void openAudience()}>청중 화면 열기</button>
+        <button className={qr ? 'lang on' : ''} onClick={() => setQr((v) => !v)} title="프로젝터에 성도용 통역 QR 코드 띄우기 (Q 키)">
+          통역 QR {qr ? '끄기' : '띄우기'}
+        </button>
+        <button onClick={() => window.open(`${LAN_URL}/connect`, '_blank')} title="통역·마이크·인증서 QR 모음">
+          휴대폰 연결
+        </button>
         <span className="langs" title={`자막 언어 (최대 ${MAX_LANGS}개, 영어는 기본)`}>
           {LANGUAGES.map((l) => {
             const on = langs.includes(l.code)
@@ -461,7 +469,7 @@ function Presenter() {
                 ? lastCaption.map((l, i) => <div key={i}>{l.text}</div>)
                 : '(아직 없음)'}
           </div>
-          <div className="keys">→ / ← 넘기기 · T 번역 켜기/끄기 · B 화면 가림 · −/+ 자막 글씨 · [ / ] 자막 위치 · Home/End 처음/끝</div>
+          <div className="keys">→ / ← 넘기기 · T 번역 켜기/끄기 · B 화면 가림 · Q 통역 QR · −/+ 자막 글씨 · [ / ] 자막 위치 · Home/End 처음/끝</div>
         </aside>
       </main>
       <div className="strip" ref={stripRef}>
