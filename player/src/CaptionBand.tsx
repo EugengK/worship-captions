@@ -14,6 +14,15 @@ const HIDE_AFTER_MS = 8000
 const GRACE_AFTER_OFF_MS = 6000
 /** Projectors often cut off the screen's edges, so the band sits above the bottom by default (% of height) */
 export const DEFAULT_LIFT = 8
+/** A prepared caption longer than this (characters, all languages) is drawn smaller, so a slide
+ * with several Bible verses is not hidden behind the band (about four lines at the default size). */
+const FIT_CHARS = 240
+const MIN_FIT = 0.6
+
+/** Text size factor for a prepared caption: 1 up to FIT_CHARS, then shrinking with its length. */
+export function fitScale(chars: number): number {
+  return chars <= FIT_CHARS ? 1 : Math.max(MIN_FIT, Math.sqrt(FIT_CHARS / chars))
+}
 
 export function CaptionBand({
   translate,
@@ -75,11 +84,13 @@ export function CaptionBand({
     fixed && !liveNow ? langs.filter((c) => fixed[c]).map((c) => ({ lang: c, text: fixed[c]! })) : lines
   const shown = langs.map((c) => source.find((l) => l.lang === c)).filter((l): l is CaptionLine => !!l)
   if (!shown.length) return null
+  const prepared = !!fixed && !liveNow
+  const fit = prepared ? fitScale(shown.reduce((n, l) => n + l.text.length, 0)) : 1
   return (
     <div
       className={`caption-band n${shown.length}${fixed && !liveNow ? ' fixed' : ''}`}
       aria-live="polite"
-      style={{ opacity: fixed || visible ? 1 : 0, ['--cap' as string]: scale, bottom: `${lift}vh` }}
+      style={{ opacity: fixed || visible ? 1 : 0, ['--cap' as string]: scale * fit, bottom: `${lift}vh` }}
     >
       {shown.map((l, i) => (
         <div key={i} lang={l.lang} className={i === 0 ? 'caption-first' : 'caption-second'}>
