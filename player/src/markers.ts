@@ -109,3 +109,33 @@ export function mismatchedSlides(file: CaptionFile, slideText: (no: number) => s
 export function liveTranslation(carried: boolean, marker: boolean | null, hasFixed: boolean): boolean {
   return hasFixed && marker !== true ? false : carried
 }
+
+/**
+ * Moves prepared captions along when slides are deleted, duplicated or reordered.
+ * `newToOld[k]` is the old 1-based number of the slide now at position k+1, or null for a new
+ * slide (a duplicate gets no prepared caption: after its words are changed the old one would be wrong).
+ */
+export function remapCaptionFile(file: CaptionFile, newToOld: (number | null)[]): CaptionFile {
+  const move = <T>(m: Map<number, T>) => {
+    const out = new Map<number, T>()
+    newToOld.forEach((old, k) => {
+      if (old != null && m.has(old)) out.set(k + 1, m.get(old)!)
+    })
+    return out
+  }
+  return { title: file.title, slides: move(file.slides), live: move(file.live), expect: move(file.expect) }
+}
+
+/** The caption file as JSON again (to save it next to the edited .pptx). */
+export function captionFileJson(file: CaptionFile): string {
+  const nos = [...new Set([...file.slides.keys(), ...file.live.keys(), ...file.expect.keys()])].sort((a, b) => a - b)
+  const slides: Record<string, Record<string, unknown>> = {}
+  for (const no of nos) {
+    const entry: Record<string, unknown> = {}
+    if (file.expect.has(no)) entry.ko = file.expect.get(no)
+    if (file.live.has(no)) entry.live = file.live.get(no)
+    Object.assign(entry, file.slides.get(no) ?? {})
+    slides[String(no)] = entry
+  }
+  return JSON.stringify({ title: file.title, slides }, null, 1)
+}

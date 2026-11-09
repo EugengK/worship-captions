@@ -3,8 +3,8 @@
  * presenter and audience windows draw: render trees, image URLs, embedded fonts,
  * audio and video clips and the [번역 ON]/[번역 OFF] notes markers.
  */
-import { openPptx, getSlideNotes, listEmbeddedFonts } from '@genoffice/pptx-engine'
-import type { EmbeddedFontFace } from '@genoffice/pptx-engine'
+import { openPptx, getSlideNotes, getSlideHidden, listEmbeddedFonts } from '@genoffice/pptx-engine'
+import type { EmbeddedFontFace, OpenedPptx } from '@genoffice/pptx-engine'
 import { buildRenderSlide } from '@genoffice/pptx-render'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { CanvasMetrics, registerFonts } from './fonts'
@@ -44,6 +44,15 @@ export interface PlayerSlide {
   video: VideoClip[]
   /** Slide's first line of text, for the slide list */
   title: string
+  /** Hidden in PowerPoint (<p:sld show="0">): skipped when moving with →/← */
+  hidden: boolean
+}
+
+/** What it takes to edit the deck and draw slides again (kept by the presenter window only). */
+export interface DeckSource {
+  opened: OpenedPptx
+  media: (ref: string) => string | undefined
+  metrics: CanvasMetrics
 }
 
 export interface PlayerDeck {
@@ -85,7 +94,10 @@ function firstText(elements: any[]): string {
   return ''
 }
 
-export async function loadDeck(file: File, onProgress: (msg: string) => void): Promise<PlayerDeck> {
+export async function loadDeck(
+  file: File,
+  onProgress: (msg: string) => void,
+): Promise<{ deck: PlayerDeck; source: DeckSource }> {
   onProgress('파일 읽는 중…')
   const bytes = new Uint8Array(await file.arrayBuffer())
   onProgress('슬라이드 해석 중…')
@@ -105,46 +117,64 @@ export async function loadDeck(file: File, onProgress: (msg: string) => void): P
     urls.set(ref, url)
     return url
   }
+  const source: DeckSource = { opened, media, metrics }
 
-  const raw = opened.deck.slides.map((slide, i) => {
+  const raw = opened.deck.slides.map((_, i) => {
     if (i % 10 === 0) onProgress(`슬라이드 그리는 중… ${i + 1}/${opened.deck.slides.length}`)
-    const render = buildRenderSlide(slide, opened.deck.size, { fitWidthPx: RENDER_WIDTH, media, metrics, slideNo: i + 1 })
-    const notes = getSlideNotes(opened.archive, slide.path)
-    const auto = autoplayIds(slide.originalXml)
-    const audio: AudioClip[] = []
-    const video: VideoClip[] = []
-    for (const el of slide.elements as any[]) {
-      if (el.type !== 'picture' || !el.media?.target || el.media.external) continue
-      const url = media(el.media.target)
-      if (!url) continue
-      // The timing XML targets the shape id (<p:cNvPr id>), not the engine's element id
-      const spid = shapeId(el, slide.originalXml)
-      if (el.media.kind === 'audio') {
-        audio.push({ sourceId: el.id, url, autoplay: auto.has(spid) })
-      } else if (el.media.kind === 'video') {
-        const node: any = render.nodes.find((n: any) => n.sourceId === el.id)
-        if (!node?.box) continue
-        const b = node.box
-        video.push({
-          sourceId: el.id,
-          url,
-          autoplay: auto.has(spid),
-          box: {
-            left: (b.x / render.widthPx) * 100,
-            top: (b.y / render.heightPx) * 100,
-            width: (b.w / render.widthPx) * 100,
-            height: (b.h / render.heightPx) * 100,
-          },
-          volume: mediaVolume(slide.originalXml, spid),
-        })
-      }
-    }
-    return { no: i + 1, render, notes, marker: notesMarker(notes), audio, video, title: firstText(slide.elements) }
+    return buildSlide(source, i)
   })
+  return { deck: assembleDeck(file.name, fonts, raw), source }
+}
+
+export type RawSlide = Omit<PlayerSlide, 'translate'>
+
+/** Draws slide `i` of the opened file and gathers its notes, media and markers. */
+export function buildSlide(source: DeckSource, i: number): RawSlide {
+  const { opened, media, metrics } = source
+  const slide = opened.deck.slides[i]!
+  const render = buildRenderSlide(slide, opened.deck.size, { fitWidthPx: RENDER_WIDTH, media, metrics, slideNo: i + 1 })
+  const notes = getSlideNotes(opened.archive, slide.path)
+  const auto = autoplayIds(slide.originalXml)
+  const audio: AudioClip[] = []
+  const video: VideoClip[] = []
+  for (const el of slide.elements as any[]) {
+    if (el.type !== 'picture' || !el.media?.target || el.media.external) continue
+    const url = media(el.media.target)
+    if (!url) continue
+    // The timing XML targets the shape id (<p:cNvPr id>), not the engine's element id
+    const spid = shapeId(el, slide.originalXml)
+    if (el.media.kind === 'audio') {
+      audio.push({ sourceId: el.id, url, autoplay: auto.has(spid) })
+    } else if (el.media.kind === 'video') {
+      const node: any = render.nodes.find((n: any) => n.sourceId === el.id)
+      if (!node?.box) continue
+      const b = node.box
+      video.push({
+        sourceId: el.id,
+        url,
+        autoplay: auto.has(spid),
+        box: {
+          left: (b.x / render.widthPx) * 100,
+          top: (b.y / render.heightPx) * 100,
+          width: (b.w / render.widthPx) * 100,
+          height: (b.h / render.heightPx) * 100,
+        },
+        volume: mediaVolume(slide.originalXml, spid),
+      })
+    }
+  }
+  return {
+    no: i + 1, render, notes, marker: notesMarker(notes), audio, video,
+    title: firstText(slide.elements), hidden: getSlideHidden(slide),
+  }
+}
+
+/** Numbers the slides and carries the notes markers forward. */
+export function assembleDeck(name: string, fonts: EmbeddedFontFace[], raw: RawSlide[]): PlayerDeck {
   const states = translationStates(raw.map((s) => s.marker))
   return {
-    name: file.name,
-    slides: raw.map((s, i) => ({ ...s, translate: states[i]! })),
+    name,
+    slides: raw.map((s, i) => ({ ...s, no: i + 1, translate: states[i]! })),
     fonts,
     hasMarkers: raw.some((s) => s.marker !== null),
   }

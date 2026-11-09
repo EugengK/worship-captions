@@ -35,8 +35,9 @@ button { font: inherit; cursor: pointer; }
 
 /* Presenter window */
 .presenter { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
-.presenter header { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: #1c1c1c; border-bottom: 1px solid #333; }
+.presenter header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 14px; background: #1c1c1c; border-bottom: 1px solid #333; }
 .presenter header .file { color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 30vw; }
+.presenter header button, .presenter header label, .presenter header span { white-space: nowrap; }
 .presenter header button { padding: 6px 12px; border-radius: 6px; border: 1px solid #555; background: #2a2a2a; color: #eee; }
 .presenter .count { margin-left: auto; font-size: 18px; font-variant-numeric: tabular-nums; }
 .pill.on { background: #1f7a3a !important; border-color: #2fa252 !important; }
@@ -57,6 +58,8 @@ button { font: inherit; cursor: pointer; }
 .presenter main { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; padding: 14px; min-height: 0; }
 .presenter .current { display: flex; align-items: center; justify-content: center; min-height: 0; overflow: hidden; }
 .presenter aside { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: hidden; }
+.presenter aside.editing { overflow-y: auto; }
+.presenter aside.editing > * { flex: none; }
 .presenter .label { color: #888; font-size: 12px; margin-top: 4px; }
 .presenter .end { padding: 30px; color: #777; border: 1px dashed #444; text-align: center; }
 .presenter .notes { white-space: pre-wrap; background: #1b1b1b; padding: 8px; border-radius: 6px; max-height: 18vh; overflow: auto; }
@@ -76,3 +79,10 @@ button { font: inherit; cursor: pointer; }
 .audience-slide { position: relative; }
 .audience-slide video { position: absolute; object-fit: fill; }
 .qr-overlay { position: fixed; inset: 0; width: 100vw; height: 100vh; border: 0; background: #fff; z-index: 20; pointer-events: none; }
+.presenter .edit-panel { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid #444; border-radius: 8px; background: #1b1f27; }
+.presenter .edit-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.presenter .edit-buttons button { padding: 5px 10px; border-radius: 6px; border: 1px solid #555; background: #2a2a2a; color: #eee; }
+.presenter .edit-buttons button:disabled { opacity: 0.4; }
+.presenter .box-editor textarea { width: 100%; box-sizing: border-box; font: 15px -apple-system, 'Apple SD Gothic Neo', sans-serif; background: #111; color: #eee; border: 1px solid #555; border-radius: 6px; padding: 6px; resize: vertical; }
+.presenter .hint { color: #aaa; font-size: 13px; }
+.thumb.hidden-slide { opacity: 0.35; }

@@ -59,3 +59,19 @@ test('video volume and click-to-play from the slide timing', async () => {
   assert.equal(mediaVolume(xml, '9'), 1)
   assert.deepEqual([...autoplayIds(xml)], []) // starts on a click, not by itself
 })
+
+test('captions follow slides that are deleted, duplicated or moved', async () => {
+  const { parseCaptionFile, remapCaptionFile, captionFileJson } = await import('../src/markers.ts')
+  const f = parseCaptionFile(JSON.stringify({ title: 't', slides: { '1': { live: false }, '2': { en: 'two' }, '3': { live: true, en: 'three' } } }))
+  // delete slide 2
+  const d = remapCaptionFile(f, [1, 3])
+  assert.deepEqual([...d.slides], [[2, { en: 'three' }]])
+  assert.deepEqual([...d.live], [[1, false], [2, true]])
+  // duplicate slide 2: the copy (new slide 3) has no prepared caption
+  const c = remapCaptionFile(f, [1, 2, null, 3])
+  assert.deepEqual([...c.slides.keys()], [2, 4])
+  // move slide 3 to the front, and back to JSON
+  const m = remapCaptionFile(f, [3, 1, 2])
+  assert.deepEqual(JSON.parse(captionFileJson(m)).slides, { '1': { live: true, en: 'three' }, '2': { live: false }, '3': { en: 'two' } })
+  assert.deepEqual(parseCaptionFile(captionFileJson(m)).slides, m.slides)
+})

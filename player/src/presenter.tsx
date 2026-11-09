@@ -6,8 +6,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { SlideThumb } from 'ieum-slides/SlideThumb'
-import { imageUrls, loadDeck, preloadImages, type PlayerDeck } from './deck'
-import { liveTranslation, mismatchedSlides, parseCaptionFile, translationStates, type CaptionFile } from './markers'
+import { imageUrls, loadDeck, preloadImages, type DeckSource, type PlayerDeck } from './deck'
+import { applyEdit, download, savedPptx, textBoxes, type EditOp } from './edit'
+import {
+  captionFileJson, liveTranslation, mismatchedSlides, parseCaptionFile, remapCaptionFile, translationStates, type CaptionFile,
+} from './markers'
 import { DEFAULT_LIFT } from './CaptionBand'
 import { CHANNEL, Hub, LANGUAGES, MAX_LANGS, NEXT_KEYS, PREV_KEYS, toggleLang, LAN_URL, type CaptionLine, type ShowMessage, type VideoCommand } from './link'
 import './player.css'
@@ -52,6 +55,11 @@ function Presenter() {
     }
   })
   const [black, setBlack] = useState(false)
+  // Editing (delete/duplicate/move/hide slides, change words): changes stay in memory until saved
+  const source = useRef<DeckSource | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [unsaved, setUnsaved] = useState(false)
+  const [saving, setSaving] = useState('')
   const [qr, setQr] = useState(false)
   // Caption band height above the screen's bottom edge (% of height), kept between services
   const [capLift, setCapLift] = useState(() => {
@@ -116,7 +124,9 @@ function Presenter() {
       }
       setProgress('여는 중…')
       try {
-        const d = await loadDeck(pptx, setProgress)
+        const { deck: d, source: src } = await loadDeck(pptx, setProgress)
+        source.current = src
+        setUnsaved(false)
         setProgress('그림 준비 중…')
         setImages(await preloadImages(document, imageUrls(d.slides)))
         window.worshipPlayer = { deck: d }
@@ -147,6 +157,16 @@ function Presenter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [captions])
 
+  /** First slide from `i` in direction `dir` that is not hidden (PowerPoint skips hidden slides). */
+  const shownFrom = useCallback(
+    (i: number, dir: 1 | -1) => {
+      if (!deck) return i
+      for (let k = i; k >= 0 && k < deck.slides.length; k += dir) if (!deck.slides[k]!.hidden) return k
+      return index
+    },
+    [deck, index],
+  )
+
   const go = useCallback(
     (to: number) => {
       if (!deck) return
@@ -172,9 +192,9 @@ function Presenter() {
         // Like PowerPoint: on a slide with a click-to-play video the first "next" starts it
         const v = deck?.slides[index]?.video.find((c) => !c.autoplay)
         if (v && !(videoCmd?.slide === index && videoCmd.url === v.url)) videoAction(v.url, 'start')
-        else go(index + 1)
+        else go(shownFrom(index + 1, 1))
       }
-      else if (PREV_KEYS.has(key)) go(index - 1)
+      else if (PREV_KEYS.has(key)) go(shownFrom(index - 1, -1))
       else if (key === 'Home') go(0)
       else if (key === 'End' && deck) go(deck.slides.length - 1)
       else if (key === 'b' || key === 'B' || key === '.') setBlack((b) => !b)
@@ -185,7 +205,7 @@ function Presenter() {
       else if (key === ']') setCapLift((v) => Math.min(40, v + 2))
       else if (key === '[') setCapLift((v) => Math.max(0, v - 2))
     },
-    [go, index, deck, videoCmd, videoAction],
+    [go, shownFrom, index, deck, videoCmd, videoAction],
   )
 
   const fixed = captions?.slides.get(index + 1) ?? null
@@ -196,7 +216,7 @@ function Presenter() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement).tagName === 'INPUT') return
+      if (e.metaKey || e.ctrlKey || e.altKey || ['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return
       e.preventDefault()
       handleKey(e.key)
     }
@@ -288,6 +308,17 @@ function Presenter() {
     }
   }
 
+  // Unsaved edits: the browser asks before the window closes or reloads
+  useEffect(() => {
+    if (!unsaved) return
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [unsaved])
+
   // Closing (or reloading) this window closes the projector window too, so nobody has to find it
   useEffect(() => {
     const close = () => audience.current?.close()
@@ -332,6 +363,46 @@ function Presenter() {
     stripRef.current?.querySelector(`[data-i="${index}"]`)?.scrollIntoView({ block: 'nearest', inline: 'center' })
   }, [index])
 
+  const edit = async (op: EditOp) => {
+    if (!deck || !source.current) return
+    const r = applyEdit(source.current, deck, op)
+    if (!r) return
+    const known = new Set(images.keys())
+    const fresh = [...imageUrls(r.deck.slides)].filter((u) => !known.has(u))
+    if (fresh.length) {
+      const more = await preloadImages(document, fresh)
+      setImages((cur) => new Map([...cur, ...more]))
+    }
+    window.worshipPlayer = { deck: r.deck }
+    setDeck(r.deck)
+    setCaptions((c) => (c ? remapCaptionFile(c, r.newToOld) : c))
+    setIndex(r.index)
+    setUnsaved(true)
+    channel.postMessage({ type: 'deck' } satisfies ShowMessage)
+  }
+
+  // Saved files get plain English names: some browsers replace a Korean download name with "download"
+  const baseName = (() => {
+    const own = (deck?.name ?? '').replace(/\.pptx$/i, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+    const d = new Date()
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    return /[A-Za-z0-9]{3,}/.test(own) ? own : `worship-${today}`
+  })()
+  const savePptxFile = async () => {
+    if (!source.current) return
+    setSaving('PPT 저장 중… (큰 파일은 1분쯤 걸립니다)')
+    try {
+      download(await savedPptx(source.current), `${baseName}-edited.pptx`)
+      setUnsaved(false)
+      setSaving('')
+    } catch (e) {
+      setSaving(`저장하지 못했습니다: ${(e as Error).message}`)
+    }
+  }
+  const saveCaptionFile = () => {
+    if (captions) download(new Blob([captionFileJson(captions)], { type: 'application/json' }), `${baseName}-captions.json`)
+  }
+
   if (!deck) {
     return (
       <div
@@ -356,7 +427,9 @@ function Presenter() {
   }
 
   const slide = deck.slides[index]!
-  const nextSlide = deck.slides[index + 1]
+  const nextIndex = shownFrom(index + 1, 1)
+  const nextSlide = nextIndex > index ? deck.slides[nextIndex] : undefined
+  const boxes = editing && source.current ? textBoxes(source.current, index) : []
   const aspect = slide.render.widthPx / slide.render.heightPx
   return (
     <div className="presenter">
@@ -364,6 +437,14 @@ function Presenter() {
         <strong>예배 발표기</strong>
         <span className="file">{deck.name}</span>
         <button onClick={() => void openAudience()}>청중 화면 열기</button>
+        <button className={editing ? 'lang on' : ''} onClick={() => setEditing((v) => !v)} title="슬라이드 삭제·복제·순서·숨기기, 글자 고치기">
+          {editing ? '편집 끝' : '편집'}
+        </button>
+        {unsaved && (
+          <button className="pill off" onClick={() => void savePptxFile()} title="고친 PPT를 새 파일로 저장 (원본은 그대로)">
+            저장 안 됨 · PPT 저장
+          </button>
+        )}
         <button className={qr ? 'lang on' : ''} onClick={() => setQr((v) => !v)} title="프로젝터에 성도용 통역 QR 코드 띄우기 (Q 키)">
           통역 QR {qr ? '끄기' : '띄우기'}
         </button>
@@ -423,7 +504,7 @@ function Presenter() {
         <div className="current" ref={mainRef}>
           <SlideThumb slide={slide.render} images={images} width={fit(mainBox, aspect)} />
         </div>
-        <aside ref={sideRef}>
+        <aside ref={sideRef} className={editing ? 'editing' : ''}>
           <div className="label">다음</div>
           {nextSlide ? (
             <SlideThumb slide={nextSlide.render} images={images} width={fit({ w: sideBox.w, h: sideBox.h * 0.4 }, aspect)} />
@@ -459,6 +540,33 @@ function Presenter() {
               </div>
             )
           })}
+          {editing && (
+            <div className="edit-panel">
+              <div className="label">편집 ({index + 1}번 슬라이드)</div>
+              <div className="edit-buttons">
+                <button onClick={() => void edit({ kind: 'duplicate', index })}>복제</button>
+                <button
+                  onClick={() => window.confirm(`${index + 1}번 슬라이드를 지울까요? (원본 파일은 그대로입니다)`) && void edit({ kind: 'delete', index })}
+                  disabled={deck.slides.length <= 1}
+                >
+                  삭제
+                </button>
+                <button onClick={() => void edit({ kind: 'move', index, to: index - 1 })} disabled={index === 0}>◀ 앞으로</button>
+                <button onClick={() => void edit({ kind: 'move', index, to: index + 1 })} disabled={index === deck.slides.length - 1}>뒤로 ▶</button>
+                <button onClick={() => void edit({ kind: 'hide', index, hidden: !slide.hidden })}>{slide.hidden ? '보이기' : '숨기기'}</button>
+              </div>
+              {boxes.length === 0 && <div className="hint">이 슬라이드에는 고칠 수 있는 글 상자가 없습니다 (그림·표·그룹 안의 글은 안 됨).</div>}
+              {boxes.map((b) => (
+                <BoxEditor key={`${index}:${b.id}:${b.lines.join('\n')}`} lines={b.lines}
+                  onApply={(lines) => void edit({ kind: 'text', index, elementId: b.id, lines })} />
+              ))}
+              <div className="edit-buttons">
+                <button onClick={() => void savePptxFile()}>PPT 저장 (.pptx)</button>
+                <button onClick={saveCaptionFile} disabled={!captions} title="슬라이드 번호가 바뀐 자막 파일">자막 파일 저장</button>
+              </div>
+              {saving && <div className="hint">{saving}</div>}
+            </div>
+          )}
           <div className="label">노트</div>
           <div className="notes">{slide.notes || '(노트 없음)'}</div>
           <div className="label">{fixed ? '준비된 자막 (이 슬라이드)' : '최근 자막'}</div>
@@ -478,7 +586,7 @@ function Presenter() {
             key={i}
             data-i={i}
             className={
-              (i === index ? 'thumb current ' : 'thumb ') +
+              (i === index ? 'thumb current ' : 'thumb ') + (s.hidden ? 'hidden-slide ' : '') +
               (captions?.slides.has(s.no) ? 'tr-fixed' : liveTranslation(carried[i]!, markers[i] ?? null, false) ? 'tr-on' : 'tr-off')
             }
             onClick={() => go(i)}
@@ -488,9 +596,25 @@ function Presenter() {
             <span>
               {s.no}
               {captions?.slides.has(s.no) ? ' · 자막' : markers[i] === true ? ' · 번역 ON' : markers[i] === false ? ' · 번역 OFF' : ''}
+              {s.hidden ? ' · 숨김' : ''}
             </span>
           </button>
         ))}
+      </div>
+    </div>
+  )
+}
+
+/** One text box's words: edited in a text area, written to the slide with 적용. */
+function BoxEditor({ lines, onApply }: { lines: string[]; onApply: (lines: string[]) => void }) {
+  const [text, setText] = useState(lines.join('\n'))
+  const changed = text !== lines.join('\n')
+  return (
+    <div className="box-editor">
+      <textarea value={text} rows={Math.min(8, Math.max(2, text.split('\n').length))} onChange={(e) => setText(e.target.value)} />
+      <div className="edit-buttons">
+        <button disabled={!changed} onClick={() => onApply(text.split('\n'))}>적용</button>
+        <button disabled={!changed} onClick={() => setText(lines.join('\n'))}>되돌리기</button>
       </div>
     </div>
   )
